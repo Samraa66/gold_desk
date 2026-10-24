@@ -1,0 +1,8 @@
+rules_hash 0eed0fd6   5802 weekday steps 2022-12-01 -> 2026-08-15, every 4h
+  ALL  steps  5802 pass  4246 | master: n=1556 W535 L914 x107 total +63.8R avg 0.041 | trend_h4: n=3788 W1302 L2110 x376 total +225.4R avg 0.06
+ 2022  steps   132 pass    94 | master: n=  38 W13 L23 x2 total -1.8R avg -0.046 | trend_h4: n=  95 W28 L56 x11 total -6.5R avg -0.069
+ 2023  steps  1560 pass  1179 | master: n= 381 W119 L241 x21 total -41.6R avg -0.109 | trend_h4: n=1044 W373 L581 x90 total +50.2R avg 0.048
+ 2024  steps  1572 pass  1157 | master: n= 415 W134 L250 x31 total -14.8R avg -0.036 | trend_h4: n=1002 W317 L590 x95 total -48.4R avg -0.048
+ 2025  steps  1566 pass  1093 | master: n= 473 W177 L261 x35 total +73.8R avg 0.156 | trend_h4: n=1094 W392 L587 x115 total +142.8R avg 0.13
+ 2026  steps   972 pass   723 | master: n= 249 W92 L139 x18 total +48.1R avg 0.193 | trend_h4: n= 553 W192 L296 x65 total +87.4R avg 0.158
+Pass bar from the README: avg R after costs > +0.15 and > trend_h4 by 0.15R. Rules stay frozen whatever this says.

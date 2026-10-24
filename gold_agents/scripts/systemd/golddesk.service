@@ -1,0 +1,15 @@
+[Unit]
+Description=Gold desk forward-test cycle (research only, places no orders)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=golddesk
+WorkingDirectory=/home/golddesk/gold_desk/gold_agents
+Environment=GOLD_NO_GATE=1
+ExecStart=/bin/bash /home/golddesk/gold_desk/gold_agents/scripts/scheduled_cycle.sh
+# Share the box with the product politely: low priority, a memory ceiling, and first in line if memory runs out.
+Nice=10
+MemoryMax=450M
+OOMScoreAdjust=800
+TimeoutStartSec=600

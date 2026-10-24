@@ -1,0 +1,10 @@
+.venv/
+.env
+data/
+logs/
+*.parquet
+*.csv
+__pycache__/
+.pytest_cache/
+!events.example.csv
+journal/replay_*

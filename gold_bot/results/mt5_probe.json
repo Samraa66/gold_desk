@@ -1,0 +1,90 @@
+{
+  "probed_at_utc": "2026-10-15T01:54:15+00:00",
+  "python": "3.12.10",
+  "mt5_package": "5.0.6231",
+  "terminal": {
+    "build": 6259,
+    "connected": true,
+    "trade_allowed": false,
+    "company": "MetaQuotes Ltd."
+  },
+  "account": {
+    "server": "MetaQuotes-Demo",
+    "demo": true,
+    "currency": "USD",
+    "leverage": 100,
+    "margin_mode": 2,
+    "trade_allowed": true,
+    "trade_expert": true,
+    "balance": 100000.0
+  },
+  "symbol": {
+    "name": "XAUUSD",
+    "description": "Gold vs US Dollar",
+    "path": "Metals\\XAUUSD",
+    "digits": 2,
+    "point": 0.01,
+    "spread": 47,
+    "spread_float": true,
+    "trade_contract_size": 100.0,
+    "trade_tick_size": 0.01,
+    "trade_tick_value": 0.1,
+    "trade_tick_value_profit": 0.1,
+    "trade_tick_value_loss": 0.1,
+    "volume_min": 0.01,
+    "volume_max": 100.0,
+    "volume_step": 0.01,
+    "trade_stops_level": 0,
+    "trade_freeze_level": 0,
+    "trade_mode": 4,
+    "trade_exemode": 2,
+    "filling_mode": 3,
+    "swap_mode": 1,
+    "swap_long": -12.6,
+    "swap_short": -4.6,
+    "currency_base": "XAU",
+    "currency_profit": "USD",
+    "currency_margin": "USD",
+    "margin_initial": 0.0,
+    "session_deals": 0,
+    "visible": true
+  },
+  "tick": {
+    "time_utc_like": 1792040055,
+    "bid": 4141.85,
+    "ask": 4142.32,
+    "spread_price": 0.47
+  },
+  "last_bars_m1": [
+    {
+      "time": 1792039800,
+      "open": 4139.0,
+      "close": 4141.55,
+      "spread": 29
+    },
+    {
+      "time": 1792039860,
+      "open": 4141.27,
+      "close": 4142.88,
+      "spread": 23
+    },
+    {
+      "time": 1792039920,
+      "open": 4142.91,
+      "close": 4143.28,
+      "spread": 29
+    },
+    {
+      "time": 1792039980,
+      "open": 4143.28,
+      "close": 4142.12,
+      "spread": 25
+    },
+    {
+      "time": 1792040040,
+      "open": 4142.16,
+      "close": 4141.85,
+      "spread": 30
+    }
+  ]
+}

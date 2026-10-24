@@ -1,0 +1,9 @@
+[Unit]
+Description=Gold desk cycle at 06, 10, 14 and 18 UTC on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 06,10,14,18:02:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target

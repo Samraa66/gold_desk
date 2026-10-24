@@ -1,0 +1,6 @@
+data/
+.venv/
+*.parquet
+*.csv
+*.session
+.env
