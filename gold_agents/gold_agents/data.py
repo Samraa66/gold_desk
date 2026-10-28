@@ -18,7 +18,7 @@ MT5_CSV = GOLD_BOT / "data" / "mt5" / "xauusd_m1.csv"
 OANDA_CSV = GOLD_BOT / "data" / "oanda" / "xauusd_m1.csv"
 OHLC = ["open", "high", "low", "close"]
 
-TF = {"M15": "15min", "H1": "1h", "H4": "4h", "D1": "1D"}
+TF = {"M5": "5min", "M15": "15min", "H1": "1h", "H4": "4h", "D1": "1D"}   # M5 is built on demand (desk v2), never by context
 
 
 def load_m1(hist: Path | None = HIST_PARQUET, mt5: Path | None = MT5_CSV, oanda: Path | None = OANDA_CSV,

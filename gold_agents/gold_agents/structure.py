@@ -36,6 +36,28 @@ def pattern(sw: list[dict], dp: int = 2) -> dict:
             "last_highs": [round(h, dp) for h in highs], "last_lows": [round(x, dp) for x in lows]}
 
 
+def short_term(sw: list[dict], dp: int = 2, n: int = 4) -> dict:
+    """The last few swings on a fast timeframe, read in sequence: how many times in a row the lows rose and the highs
+    fell. Added 2026-10-28 after a short at resistance was stopped out by a market making higher lows every dip
+    (4,024 -> 4,033 -> 4,049 after FOMC) while its highs fell (4,067.7 -> 4,062.2): a squeeze that broke up.
+    `squeeze` = both at once, the market coiling before a break that can go either way."""
+    lows = [s["price"] for s in sw if s["kind"] == "L"][-n:]
+    highs = [s["price"] for s in sw if s["kind"] == "H"][-n:]
+
+    def run(xs, up: bool) -> int:
+        k = 0
+        for a, b in zip(reversed(xs[:-1]), reversed(xs[1:])):
+            if (b > a) if up else (b < a):
+                k += 1
+            else:
+                break
+        return k
+
+    rising, falling = run(lows, True), run(highs, False)
+    return {"lows": [round(x, dp) for x in lows], "highs": [round(x, dp) for x in highs],
+            "rising_lows": rising, "falling_highs": falling, "squeeze": rising >= 2 and falling >= 1}
+
+
 def zones(points: list[dict], tol: float, price: float, min_touches: int = 1, dp: int = 2) -> list[dict]:
     """Cluster swing prices that sit within `tol` of each other into zones. Each zone: lo/hi edge, touches, the last
     time it was touched, and whether it is support (below price) or resistance (above). Nearest to price first."""
@@ -58,7 +80,7 @@ def zones(points: list[dict], tol: float, price: float, min_touches: int = 1, dp
     return sorted(out, key=lambda z: z["distance"])
 
 
-def summary(tf: dict, price: float, lookback_days: int = 60, dp: int = 2) -> dict:
+def summary(tf: dict, price: float, lookback_days: int = 60, dp: int = 2, m5: pd.DataFrame | None = None) -> dict:
     """Everything the v2 chart agent gets besides the candles."""
     h1, h4, d1 = tf["H1"], tf["H4"], tf["D1"]
     a_h1, a_h4, a_d1 = F.atr(h1), F.atr(h4), F.atr(d1)
@@ -66,6 +88,10 @@ def summary(tf: dict, price: float, lookback_days: int = 60, dp: int = 2) -> dic
     sw_h4 = swings(h4.loc[start:] if start is not None else h4)
     sw_d1 = swings(d1.iloc[-lookback_days:], k=2)
     sw_h1 = swings(h1.iloc[-96:], k=3)
+    # The swing SEQUENCE is read on M5: an M15 swing needs two more closed M15 bars (30 min) to confirm, and on
+    # 2026-10-28 that lag hid the last two higher lows of a post-FOMC squeeze from it. Falls back to M15.
+    fast = m5.iloc[-288:] if m5 is not None and len(m5) else tf["M15"].iloc[-96:] if "M15" in tf else None
+    sw_fast = swings(fast, k=2) if fast is not None else []
     tol = 0.5 * a_h4 if a_h4 else 0.0
     zs = zones(sw_h4 + sw_d1, tol, price, min_touches=1, dp=dp) if tol else []
     sup = next((z for z in zs if z["side"] == "support"), None)
@@ -78,6 +104,7 @@ def summary(tf: dict, price: float, lookback_days: int = 60, dp: int = 2) -> dic
         "price": round(price, dp),
         "atr": {"h1": _r(a_h1, dp + 1), "h4": _r(a_h4, dp + 1), "d1": _r(a_d1, dp + 1)},
         "h4_pattern": pattern(sw_h4, dp), "h1_pattern": pattern(sw_h1, dp), "d1_pattern": pattern(sw_d1, dp),
+        "short_sequence": {**short_term(sw_fast, dp), "timeframe": "M5" if m5 is not None and len(m5) else "M15"},
         "h4_swings_recent": [{"t": str(s["time"])[:16], "kind": s["kind"], "price": round(s["price"], dp)} for s in sw_h4[-10:]],
         "zones_nearest": zs[:8],
         "nearest_support": sup, "nearest_resistance": res, "price_inside_zone": inside,

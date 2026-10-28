@@ -10,6 +10,7 @@ from gold_agents.llm import FakeLLM
 from tests.conftest import make_m1
 
 CFG = Config()
+NOFILT = V.V2(counter_run=99, min_stop_atr_h1=0.0)     # the 10-28 filters off, for tests about something else
 WED = pd.Timestamp("2026-09-02T14:00:00Z")
 T0 = pd.Timestamp("2026-10-12T10:00:00Z")
 
@@ -163,7 +164,7 @@ def test_model_setup_becomes_the_call(m1):
     fake = FakeLLM(replies={"price structure": {"bias": 0.6, "confidence": 0.7, "read": "higher lows", "setup": setup},
                             "Master trader": {"decision": "PLACE", "confidence": 0.8, "reason": "structure up"}},
                    default={"score": 0, "confidence": 0.1, "summary": "flat"})
-    call = V.decide_at(m1, WED, CFG, llm=fake, events=[])
+    call = V.decide_at(m1, WED, CFG, llm=fake, events=[], v2=NOFILT)
     assert call["decision"] == "BUY" and call["plan"]["entry_type"] == "limit"
     assert call["baselines"]["chart_setup"]["plan"] == call["plan"]
     assert "v2 BUY" in V.card(call) and "LIMIT" in V.card(call)
@@ -217,7 +218,7 @@ def test_slot_digest_lists_calls_and_passes(tmp_path, monkeypatch, m1):
              "tp1": round(c.price + 16, 2), "tp2": round(c.price + 30, 2), "valid_hours": 6, "why": "retest"}
     buy = V.decide_at(m1, WED, CFG, llm=FakeLLM(replies={"price structure": {"bias": 0.6, "confidence": 0.7, "read": "up", "setup": setup},
                                                         "Master trader": {"decision": "PLACE", "confidence": 0.8, "reason": "structure up"}},
-                                               default={"score": 0, "confidence": 0.1, "summary": "flat"}), events=[])
+                                               default={"score": 0, "confidence": 0.1, "summary": "flat"}), events=[], v2=NOFILT)
     pas = V.decide_at(m1, WED, CFG, llm=FakeLLM(default={"bias": 0, "confidence": 0.2, "read": "mid", "setup": {"entry_type": "none", "why": "mid-range"},
                                                         "score": 0, "summary": "x"}), events=[])
     paths = {"XAU_USD": tmp_path / "g.jsonl", "XAG_USD": tmp_path / "s.jsonl"}
@@ -228,3 +229,68 @@ def test_slot_digest_lists_calls_and_passes(tmp_path, monkeypatch, m1):
     card = reports.scorecard(str(WED.date()), ["XAU_USD", "XAG_USD"], loader=lambda name: m1)
     assert "GOLD" in card and "BUY limit" in card and "SILVER" in card and "PASS" in card and len(card) <= reports.TG_LIMIT
     assert reports.slot_digest("2020-01-01T06:00:00Z", ["XAU_USD"]) is None
+
+
+
+# ---------------- the 2026-10-28 rules ----------------
+def test_short_term_counts_rising_lows_and_falling_highs_in_a_row():
+    sw = [{"kind": "L", "price": 4024.0}, {"kind": "H", "price": 4067.7}, {"kind": "L", "price": 4033.0},
+          {"kind": "H", "price": 4062.2}, {"kind": "L", "price": 4049.0}]
+    seq = S.short_term(sw)
+    assert seq["rising_lows"] == 2 and seq["falling_highs"] == 1 and seq["squeeze"]
+    assert S.short_term([{"kind": "L", "price": 10.0}, {"kind": "L", "price": 9.0}, {"kind": "L", "price": 11.0}])["rising_lows"] == 1
+
+
+def _sell(c, stop_gap=13.0):
+    return {"direction": "SELL", "entry_type": "limit", "entry": c.price + 3, "stop": c.price + 3 + stop_gap,
+            "tp1": c.price + 3 - 2.5 * stop_gap, "valid_hours": 6}
+
+
+def test_a_sell_against_rising_lows_is_refused(m1):
+    c = ctx(m1)
+    st = {"short_sequence": {"rising_lows": 2, "falling_highs": 0, "lows": [1, 2, 3], "highs": []}}
+    plan, why = V.check_setup(c, _sell(c), V.V2(min_stop_atr_h1=0.0), st)
+    assert plan is None and "buyers keep stepping in" in why
+
+
+def test_a_squeeze_refuses_both_sides(m1):
+    c = ctx(m1)
+    st = {"short_sequence": {"rising_lows": 2, "falling_highs": 1, "lows": [1, 2, 3], "highs": [5, 4]}}
+    plan, why = V.check_setup(c, _sell(c), V.V2(min_stop_atr_h1=0.0), st)
+    assert plan is None and "squeeze" in why
+
+
+def test_a_stop_inside_normal_noise_is_refused(m1):
+    c = ctx(m1)
+    a1 = V.F.atr(c.tf["H1"])
+    plan, why = V.check_setup(c, _sell(c, stop_gap=max(a1 * 0.5, 3.5)), V.V2_DEFAULT, {})
+    assert plan is None and "inside normal noise" in why
+    plan, why = V.check_setup(c, _sell(c, stop_gap=a1 * 1.2), V.V2_DEFAULT, {})
+    assert why is None
+
+
+def test_no_setup_in_the_hours_after_a_high_impact_release(m1):
+    fomc = [{"time": (WED - pd.Timedelta(hours=1)).to_pydatetime(), "name": "FOMC decision", "impact": "high"}]
+    c = build_context(m1, WED, CFG, None, fomc, {})
+    plan, why = V.check_setup(c, _sell(c, stop_gap=40.0), V.V2(counter_run=99), {})
+    assert plan is None and "after FOMC decision" in why
+    later = [{"time": (WED - pd.Timedelta(hours=4)).to_pydatetime(), "name": "FOMC decision", "impact": "high"}]
+    c = build_context(m1, WED, CFG, None, later, {})
+    assert V.check_setup(c, _sell(c, stop_gap=40.0), V.V2(counter_run=99), {})[1] is None
+
+
+def test_a_setup_the_new_rules_refuse_is_still_scored(m1):
+    c = ctx(m1)
+    tight = {"direction": "BUY", "entry_type": "limit", "entry": round(c.price - 4, 2), "stop": round(c.price - 7.5, 2),
+             "tp1": round(c.price + 6, 2), "tp2": round(c.price + 12, 2), "valid_hours": 6, "why": "tight"}
+    fake = FakeLLM(replies={"price structure": {"bias": 0.4, "confidence": 0.5, "read": "x", "setup": tight}},
+                   default={"score": 0, "confidence": 0.1, "summary": "flat"})
+    call = V.decide_at(m1, WED, CFG, llm=fake, events=[], v2=V.V2(counter_run=99))
+    assert call["decision"] == "PASS" and "inside normal noise" in call["baselines"]["rejected_setup"]["rejected_because"]
+
+
+def test_the_rules_reach_the_model_prompt(m1):
+    fake = FakeLLM(default={"bias": 0, "confidence": 0.2, "read": "x", "setup": {"entry_type": "none"}, "score": 0, "summary": "x"})
+    V.decide_at(m1, WED, CFG, llm=fake, events=[])
+    p = next(c for c in fake.calls if "price structure" in c["system"])
+    assert "lows rising one after another" in p["system"] and "short_sequence" in p["user"] and "after a high-impact release" in p["system"]

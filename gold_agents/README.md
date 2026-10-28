@@ -89,6 +89,14 @@ day's passes with their scored setups, yesterday's passes judged 24 h on, and ru
 Same pass bar as below. Spot check on real bars (rules only, not evidence): on 2026-10-27 10:00/14:00 and 10-28 06:00 v2 gave
 no setup where v1's lean sold into the floor.
 
+**v2 rules added 2026-10-28 evening (new v2 hash; the 18:00 slot that day stays under the old one).** From a short the owner
+took at resistance an hour after FOMC, stopped out when a double bottom (4,024 / 4,027) rallied $35 through it. In code
+(`desk_v2.setup_filters`), whatever the model says, and stated in its prompt: no setup within `post_event_hours` (3) after a
+high-impact release; the stop at least `min_stop_atr_h1` (1.0) x H1 ATR; no SELL after `counter_run` (2) rising M5 swing lows in
+a row, no BUY after 2 falling M5 highs, neither in a squeeze (`structure.short_term`, read on M5 because an M15 swing needs 30 min
+to confirm). A setup they refuse is still scored (`rejected_setup`, with the reason), so the record shows whether they help.
+Replayed on that evening's bars: the post-event rule refuses the trade; the rising-lows rule would only have seen it ~10 min later.
+
 ## Rules fixed before any live result (2026-10-21)
 Costs: spread 0.60 + slippage 0.30 in the scorer (the demo's real median is ~0.21; the conservative figure stays until
 the user's real broker demo is measured). A win exits at TP1; stop beats target inside one bar; unresolved after 48 h

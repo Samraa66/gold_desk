@@ -49,6 +49,11 @@ class V2:
     floor_gap_atr_h1: float = 1.0     # ... when price is within this x H1 ATR of it
     lookback_days: int = 60
     chart_max_tokens: int = 2500
+    # Added 2026-10-28 (a short at resistance stopped out an hour after FOMC by a market making higher lows):
+    min_stop_atr_h1: float = 1.0      # a stop closer than this x H1 ATR sits inside normal noise
+    post_event_hours: float = 3.0     # no new setup this long after a high-impact release: the first moves whipsaw
+    counter_run: int = 2              # no SELL after this many rising M5 lows in a row (buyers stepping in), no BUY
+                                      # after this many falling M5 highs in a row; a squeeze blocks both
 
 
 V2_DEFAULT = V2()
@@ -76,8 +81,13 @@ ROLE = ("Chart analyst who trades from price structure, like a discretionary tra
         "capped several times; prefer a LIMIT order at a zone in the direction of the structure, or a STOP order beyond "
         "a level for a confirmed break; put the stop beyond the structure that proves you wrong (beyond the zone or the "
         "last swing), not at an arbitrary distance; TP1 at the next opposing zone and at least {min_rr}R away. A trend "
-        "that is weeks old and stretched into a tested floor is not a reason to sell. If there is no clean setup, "
-        "entry_type is \"none\". That is the normal answer.")
+        "that is weeks old and stretched into a tested floor is not a reason to sell. Read the SEQUENCE of the last "
+        "swings on M5 (short_sequence): lows rising one after another mean buyers keep stepping in higher, so do not "
+        "sell into resistance against that; highs falling one after another mean sellers keep capping lower, so do not "
+        "buy into support against that; both at once is a squeeze, wait for the break and trade it with a stop order "
+        "or not at all. The stop must be at least {min_stop}x the H1 ATR away (atr.h1) so normal noise cannot reach "
+        "it. Within {post_event}h after a high-impact release (FOMC, CPI, payrolls) propose no setup: the first moves "
+        "whipsaw both ways. If there is no clean setup, entry_type is \"none\". That is the normal answer.")
 SCHEMA = ('{"bias": -1..1 (negative = bearish), "confidence": 0..1, "read": "<=4 sentences: structure, key zones, '
           'where price is, what would change your mind", "setup": {"direction": "BUY"|"SELL"|null, "entry_type": '
           '"market"|"limit"|"stop"|"none", "entry": <price or null>, "stop": <price or null>, "tp1": <price or null>, '
@@ -86,7 +96,9 @@ SCHEMA = ('{"bias": -1..1 (negative = bearish), "confidence": 0..1, "read": "<=4
 
 def chart_facts(ctx: Context, v2: V2) -> tuple[dict, str]:
     dp = I.of(ctx.cfg).dp
-    st = S.summary(ctx.tf, ctx.price, v2.lookback_days, dp)
+    from .data import resample
+    m5 = resample(ctx.m1.loc[ctx.as_of - pd.Timedelta(days=2):], "M5", ctx.as_of)
+    st = S.summary(ctx.tf, ctx.price, v2.lookback_days, dp, m5=m5)
     candles = "\n\n".join(f"{name} last {n}:\n{S.bars_text(ctx.tf[name], n, dp)}"
                           for name, n in (("D1", 30), ("H4", 60), ("H1", 48), ("M15", 32)))
     return st, candles
@@ -133,7 +145,7 @@ def chart_run(ctx: Context, v2: V2, llm=None) -> Report:
                  summary=f"rules v2: {setup['why']}", facts={"structure": st, "setup": setup, "rules_setup": setup})
     if llm is None:
         return rep
-    system = localise(f"{DESK}\nYour role: {ROLE.format(min_rr=v2.min_rr)}\nJSON schema: {SCHEMA}", ctx.cfg)
+    system = localise(f"{DESK}\nYour role: {ROLE.format(min_rr=v2.min_rr, min_stop=v2.min_stop_atr_h1, post_event=v2.post_event_hours)}\nJSON schema: {SCHEMA}", ctx.cfg)
     user = f"AS OF {ctx.as_of:%Y-%m-%d %H:%M} UTC ({ctx.as_of:%A})\nSTRUCTURE:\n{json.dumps(st, indent=1, default=str)}\n\nCANDLES (closed bars only):\n{candles}"
     reply = llm.complete_json(model=ctx.cfg.deep_model, system=system, user=user, max_tokens=v2.chart_max_tokens)
     s = reply.get("setup") or {}
@@ -149,8 +161,31 @@ def chart_run(ctx: Context, v2: V2, llm=None) -> Report:
 
 
 # ---------------------------------------------------------------- risk: check and size the setup
-def check_setup(ctx: Context, setup: dict, v2: V2) -> tuple[dict | None, str | None]:
-    """-> (plan dict, None) or (None, why not). The plan carries entry_type and valid_until for the scorer."""
+def setup_filters(ctx: Context, d: str, risk_: float, st: dict | None, v2: V2) -> str | None:
+    """The 2026-10-28 rules, in code so they hold whatever the model says. -> why the setup is refused, or None."""
+    from . import calendar as cal
+    t = ctx.as_of.to_pydatetime()
+    ev = cal.blocking_event(t, 0, int(v2.post_event_hours * 60), ctx.events)
+    if ev:
+        return f"within {v2.post_event_hours:g}h after {ev['name']}: the first moves whipsaw"
+    a1 = F.atr(ctx.tf["H1"])
+    if a1 and risk_ < v2.min_stop_atr_h1 * a1:
+        return f"stop {risk_:.2f} is inside normal noise (under {v2.min_stop_atr_h1:g}x the H1 ATR of {a1:.2f})"
+    seq = (st or {}).get("short_sequence") or {}
+    tfn = seq.get("timeframe", "M5")
+    up, down = seq.get("rising_lows", 0), seq.get("falling_highs", 0)
+    if up >= v2.counter_run and down >= 1:
+        return f"{tfn} squeeze (lows rising {seq.get('lows')}, highs falling {seq.get('highs')}): wait for the break"
+    if d == "SELL" and up >= v2.counter_run:
+        return f"{tfn} lows have risen {up} times in a row {seq.get('lows')}: buyers keep stepping in, no sell against that"
+    if d == "BUY" and down >= v2.counter_run:
+        return f"{tfn} highs have fallen {down} times in a row {seq.get('highs')}: sellers keep capping, no buy against that"
+    return None
+
+
+def check_setup(ctx: Context, setup: dict, v2: V2, st: dict | None = None, filters: bool = True) -> tuple[dict | None, str | None]:
+    """-> (plan dict, None) or (None, why not). The plan carries entry_type and valid_until for the scorer.
+    `filters=False` skips `setup_filters` (used only to score a refused setup as it was proposed)."""
     cfg = ctx.cfg
     spec = I.of(cfg)
     dp = spec.dp
@@ -186,6 +221,10 @@ def check_setup(ctx: Context, setup: dict, v2: V2) -> tuple[dict | None, str | N
     rr = abs(tp1 - entry) / risk_
     if rr < v2.min_rr - 1e-9:
         return None, f"TP1 is only {rr:.2f}R away (need {v2.min_rr:g}R)"
+    if filters:
+        why = setup_filters(ctx, d, risk_, st, v2)
+        if why:
+            return None, why
     if tp2 is None or (tp2 - tp1) * sign <= 0:
         tp2 = entry + sign * max(abs(tp1 - entry) * 1.5, 3 * risk_)
     risk_per_lot = risk_ * I.CONTRACT[spec.oanda]
@@ -264,19 +303,20 @@ def decide_at(m1_all: pd.DataFrame, as_of, cfg: Config, *, llm=None, macro_df=No
         {"open_calls": 0, "realised_r_today": 0.0, "last_call_by_side": {}}
     ctx = build_context(m1_all, as_of, cfg, macro_df, events, state)
     reports = {"chart": chart_run(ctx, v2, llm), "macro": macro.run(ctx, llm), "liquidity": liquidity.run(ctx)}
-    plan, why_not = check_setup(ctx, reports["chart"].facts["setup"], v2)
+    st = reports["chart"].facts["structure"]
+    plan, why_not = check_setup(ctx, reports["chart"].facts["setup"], v2, st)
     reports["chart"].facts["setup_check"] = why_not or "ok"
     decision, reason, chosen, source = master_decide(ctx, reports, plan, why_not, llm)
     # Shadows, scored on every slot: what the chart's own setup is worth with no master, and the rules setup the model
     # is compared against (the same in rules mode).
-    rules_plan, _ = check_setup(ctx, reports["chart"].facts["rules_setup"], v2)
+    rules_plan, _ = check_setup(ctx, reports["chart"].facts["rules_setup"], v2, st)
     baselines = {"chart_setup": {"direction": plan["direction"], "plan": plan} if plan else None,
                  "rules_setup": {"direction": rules_plan["direction"], "plan": rules_plan} if rules_plan else None}
     # A setup the risk check refused (too little R, stop too wide or tight, entry too far) is scored as proposed, so we
     # see whether the check throws away winners. Scoring only: it never becomes a call.
     if plan is None and why_not not in (None, "no setup"):
         loose = replace(ctx, cfg=replace(ctx.cfg, min_stop=0.0, max_stop=float("inf")))
-        raw, _ = check_setup(loose, reports["chart"].facts["setup"], replace(v2, min_rr=0.0, max_entry_atr_d1=float("inf")))
+        raw, _ = check_setup(loose, reports["chart"].facts["setup"], replace(v2, min_rr=0.0, max_entry_atr_d1=float("inf")), st, filters=False)
         if raw:
             baselines["rejected_setup"] = {"direction": raw["direction"], "plan": raw, "rejected_because": why_not}
     mode = "llm" if llm is not None else "rules"
