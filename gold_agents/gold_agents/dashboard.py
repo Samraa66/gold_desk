@@ -38,7 +38,8 @@ LABELS = {"master": "master (the call)",
           "chart_lean": "chart lean, no vetoes (shadow, every slot)",
           "chart_macro": "chart lean + macro not against (shadow)",
           "chart_setup": "chart's own setup, no master (v2 shadow)",
-          "rules_setup": "rules structure setup (v2 shadow)"}
+          "rules_setup": "rules structure setup (v2 shadow)",
+          "rejected_setup": "chart setup the risk check refused (v2 shadow)"}
 
 
 def _fmt_r(x):
@@ -90,6 +91,15 @@ def _chart(call: dict, m1: pd.DataFrame, now: pd.Timestamp, closed_at: str | Non
     return "".join(parts)
 
 
+def _after(a: dict | None) -> str:
+    """The 24 h after a PASS: net move in H1 ATRs, and the biggest swing each way."""
+    if not a or a.get("net_atr") is None:
+        return '<span class="sub">window not closed</span>'
+    big = abs(a["net_atr"]) >= 3
+    net = f'{a["net_atr"]:+.1f} ATR'
+    return (f'<b>{net}</b>' if big else net) + f' <span class="sub">(up {a["up_atr"]:.1f}, down {a["down_atr"]:.1f})</span>'
+
+
 def _scorecard(scored: list[dict]) -> str:
     rows = []
     for mode in ("llm", "rules"):
@@ -129,6 +139,12 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
     body.append(f'<div class="note">Nothing here is judged until a mode has 30 resolved calls over 6+ weeks (so far: {resolved} resolved calls). '
                 f'A few wins or losses in a row prove nothing. Assumed costs ({cfg.spread_assumed:g} spread + {cfg.slippage_assumed:g} slippage, in price units) are already deducted from every R.</div>')
     body.append("<h2>Scorecard</h2>" + _scorecard(scored))
+    for mode in ("llm", "rules"):
+        ps = J.summarize_passes([e for e in scored if e["mode"] == mode])
+        if ps["passes_judged"]:
+            body.append(f'<div class="card sub"><b>{mode} PASSes, judged 24 h later:</b> {ps["passes_judged"]} so far · price stayed under '
+                        f'{ps["big_atr"]:g} H1 ATR (quiet, passing was fine) after {ps["quiet_after"]} · a big move followed {ps["big_move_after"]} '
+                        f'({ps["big_up"]} up, {ps["big_down"]} down) · average net move {ps["avg_abs_net_atr"]} ATR</div>')
     body.append(f"<h2>Calls ({len(calls)})</h2>")
     if not calls:
         body.append('<div class="card sub">No BUY or SELL yet. PASS is a valid answer; most cycles will be PASS.</div>')
@@ -177,8 +193,8 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
             f'<div class="lv">{p["lots"]} lots, risk ${p["risk_usd"]:.0f} (demo sizing)</div>{outline}'
             f'<p class="reason">{html.escape(e["reason"])}</p></div>'
             f'<div>{_chart(e, m1, now, sc.get("closed_at"), outcome)}</div></div>')
-    body.append(f"<h2>PASS decisions ({len(passes)})</h2><div class=card><table><tr><th>Time (UTC)</th><th>Mode</th><th>Chart lean</th><th>Why</th></tr>"
-                + "".join(f"<tr><td>{html.escape(e['as_of'][:16].replace('T', ' '))}</td><td>{e['mode']}</td><td>{(((e.get('baselines') or {}).get('chart_lean') or (e.get('baselines') or {}).get('chart_setup')) or {}).get('direction', '—')}</td><td>{html.escape(e['reason'])}</td></tr>"
+    body.append(f"<h2>PASS decisions ({len(passes)})</h2><div class=card><table><tr><th>Time (UTC)</th><th>Mode</th><th>Chart lean</th><th>Next 24h</th><th>Why</th></tr>"
+                + "".join(f"<tr><td>{html.escape(e['as_of'][:16].replace('T', ' '))}</td><td>{e['mode']}</td><td>{(((e.get('baselines') or {}).get('chart_lean') or (e.get('baselines') or {}).get('chart_setup')) or {}).get('direction', '—')}</td><td>{_after(e.get('after'))}</td><td>{html.escape(e['reason'])}</td></tr>"
                           for e in passes[:40]) + "</table></div>")
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{html.escape(spec.label)} desk log</title><style>{CSS}</style></head><body><main>{"".join(body)}</main></body></html>')

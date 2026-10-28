@@ -81,6 +81,11 @@ def cmd_score(args):
         v = s[name]
         print(f"  {name:10s} calls {v['calls']:3d} resolved {v['resolved']:3d} W{v['wins']} L{v['losses']} exp{v['expired']} "
               f"open {v['still_open']}  total {v['total_r']:+.2f}R  avg {v['avg_r']}")
+    for mode in ("llm", "rules"):
+        ps = J.summarize_passes([e for e in scored if e["mode"] == mode])
+        if ps["passes_judged"]:
+            print(f"  {mode} passes judged {ps['passes_judged']}: quiet after {ps['quiet_after']}, big move after {ps['big_move_after']} "
+                  f"(up {ps['big_up']}, down {ps['big_down']}, >= {ps['big_atr']:g} H1 ATR in 24h)  avg |net| {ps['avg_abs_net_atr']} ATR")
     if all(isinstance(s.get(n), dict) and s[n]["resolved"] < 30 for n in s if isinstance(s[n], dict)):
         print("Nothing is judged under 30 resolved calls per strategy.")
 

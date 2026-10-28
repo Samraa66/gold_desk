@@ -180,3 +180,30 @@ def test_parse_json_takes_the_first_object_and_ignores_what_follows():
     from gold_agents.llm import parse_json
     assert parse_json('{"a": 1, "s": {"b": 2}}\nNote: {"x": 3}') == {"a": 1, "s": {"b": 2}}
     assert parse_json('Here you go: {"a": 1} {"a": 2}') == {"a": 1}
+
+
+# ---------------- scoring a PASS and a refused setup ----------------
+def test_move_after_a_pass_is_measured_in_atr_once_the_window_closes():
+    idx = pd.date_range(T0, periods=24 * 60 + 5, freq="min", tz="UTC")
+    b = pd.DataFrame({"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0, "spread": 0.2}, index=idx)
+    b.iloc[600, b.columns.get_loc("high")] = 112.0
+    b.iloc[-10:, b.columns.get_loc("close")] = 108.0
+    e = {"as_of": str(T0), "price": 100.0, "decision": "PASS",
+         "reports": {"chart": {"facts": {"structure": {"atr": {"h1": 2.0}}}}}}
+    assert J.move_after(e, b, T0 + pd.Timedelta(hours=23)) is None
+    a = J.move_after(e, b, T0 + pd.Timedelta(hours=25))
+    assert a["up"] == 12.0 and a["down"] == 1.0 and a["net"] == 8.0 and a["net_atr"] == 4.0
+    s = J.summarize_passes([{"after": a}, {"after": {**a, "net_atr": 0.5}}])
+    assert s["passes_judged"] == 2 and s["big_up"] == 1 and s["quiet_after"] == 1
+
+
+def test_a_setup_the_risk_check_refuses_is_still_scored(m1):
+    c = ctx(m1)
+    low_rr = {"direction": "SELL", "entry_type": "limit", "entry": round(c.price + 2, 2), "stop": round(c.price + 12, 2),
+              "tp1": round(c.price - 5, 2), "tp2": round(c.price - 15, 2), "valid_hours": 6, "why": "tight"}
+    fake = FakeLLM(replies={"price structure": {"bias": -0.4, "confidence": 0.5, "read": "x", "setup": low_rr}},
+                   default={"score": 0, "confidence": 0.1, "summary": "flat"})
+    call = V.decide_at(m1, WED, CFG, llm=fake, events=[])
+    rej = call["baselines"]["rejected_setup"]
+    assert call["decision"] == "PASS" and "need 1.5R" in rej["rejected_because"] and rej["plan"]["entry"] == low_rr["entry"]
+    assert "rejected_setup" in J.score_entries([call], m1, CFG, WED + pd.Timedelta(hours=1))[0]["scores"]

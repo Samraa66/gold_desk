@@ -20,7 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 
 import pandas as pd
 
@@ -272,6 +272,13 @@ def decide_at(m1_all: pd.DataFrame, as_of, cfg: Config, *, llm=None, macro_df=No
     rules_plan, _ = check_setup(ctx, reports["chart"].facts["rules_setup"], v2)
     baselines = {"chart_setup": {"direction": plan["direction"], "plan": plan} if plan else None,
                  "rules_setup": {"direction": rules_plan["direction"], "plan": rules_plan} if rules_plan else None}
+    # A setup the risk check refused (too little R, stop too wide or tight, entry too far) is scored as proposed, so we
+    # see whether the check throws away winners. Scoring only: it never becomes a call.
+    if plan is None and why_not not in (None, "no setup"):
+        loose = replace(ctx, cfg=replace(ctx.cfg, min_stop=0.0, max_stop=float("inf")))
+        raw, _ = check_setup(loose, reports["chart"].facts["setup"], replace(v2, min_rr=0.0, max_entry_atr_d1=float("inf")))
+        if raw:
+            baselines["rejected_setup"] = {"direction": raw["direction"], "plan": raw, "rejected_because": why_not}
     mode = "llm" if llm is not None else "rules"
     h = v2_hash(cfg, v2)
     return {"id": f"{as_of.isoformat()}|{mode}|{h}", "as_of": as_of.isoformat(), "desk": "v2", "mode": mode, "rules_hash": h,

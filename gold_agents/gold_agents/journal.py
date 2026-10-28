@@ -142,8 +142,43 @@ def score_entries(entries: list[dict], m1: pd.DataFrame, cfg: Config, now: pd.Ti
         for name, b in (e.get("baselines") or {}).items():
             if b:
                 strategies[name] = score_plan(b["direction"], b["plan"], as_of, m1, cfg, now)
-        out.append({**e, "scores": strategies})
+        out.append({**e, "scores": strategies, "after": move_after(e, m1, now) if e["decision"] == "PASS" else None})
     return out
+
+
+def move_after(entry: dict, m1: pd.DataFrame, now: pd.Timestamp, hours: float = 24.0) -> dict | None:
+    """What price did in the `hours` after a PASS: the biggest move up and down from the call's price and where it
+    ended, in price units and in H1 ATRs (the desk's own volatility unit at the time). Lets a PASS be judged:
+    'stood aside and price went nowhere' reads differently from 'stood aside and it ran 4 ATR'. Only once the whole
+    window has closed; never used by any decision."""
+    t0 = pd.Timestamp(entry["as_of"])
+    end = t0 + pd.Timedelta(hours=hours)
+    if now < end:
+        return None
+    w = m1.loc[t0: end - pd.Timedelta(minutes=1)]
+    if w.empty:
+        return None
+    px = float(entry["price"])
+    up, down, net = float(w["high"].max()) - px, px - float(w["low"].min()), float(w["close"].iloc[-1]) - px
+    facts = ((entry.get("reports") or {}).get("chart") or {}).get("facts") or {}
+    atr = (facts.get("structure") or {}).get("atr", {}).get("h1") or facts.get("h1_atr")
+    in_atr = (lambda x: round(x / atr, 2)) if atr else (lambda x: None)
+    return {"hours": hours, "up": round(up, 6), "down": round(down, 6), "net": round(net, 6),
+            "up_atr": in_atr(up), "down_atr": in_atr(down), "net_atr": in_atr(net), "h1_atr": atr}
+
+
+def summarize_passes(scored: list[dict], big_atr: float = 3.0) -> dict:
+    """PASSes whose 24 h window has closed, split by whether price then made a big one-way move (>= `big_atr` H1 ATRs
+    net). A desk that passes before most big moves is missing trades; one that passes in chop is doing its job.
+    Reporting only: the threshold shapes this summary and nothing else."""
+    done = [e["after"] for e in scored if e.get("after") and e["after"]["net_atr"] is not None]
+    if not done:
+        return {"passes_judged": 0}
+    big_up = sum(a["net_atr"] >= big_atr for a in done)
+    big_down = sum(a["net_atr"] <= -big_atr for a in done)
+    return {"passes_judged": len(done), "big_move_after": big_up + big_down, "big_up": big_up, "big_down": big_down,
+            "quiet_after": len(done) - big_up - big_down,
+            "avg_abs_net_atr": round(sum(abs(a["net_atr"]) for a in done) / len(done), 2), "big_atr": big_atr}
 
 
 def state_at(scored: list[dict], as_of: pd.Timestamp) -> dict:
