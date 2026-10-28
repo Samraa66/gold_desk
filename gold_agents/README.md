@@ -83,7 +83,9 @@ v2 (`gold_agents/desk_v2.py`, `gold_agents/structure.py`, run with `--desk v2`) 
 
 Own hash (`desk_v2.v2_hash`, includes v1's), own logs `journal/calls_v2*.jsonl` and dashboards `dashboard_v2*.html`; shadows
 `chart_setup` (the chart's setup with no master) and `rules_setup`. Macro and liquidity agents are v1's. v1 keeps running,
-logged silently, as the comparison. Only v2's model call is sent to Telegram (a card with the order type, level and expiry).
+logged silently, as the comparison. Telegram gets ONE message per slot listing every instrument's v2 model decision, calls and passes
+(`python -m gold_agents digest`), and after the 18:00 UTC slot a scorecard (`scorecard`): the day's calls and their status, the
+day's passes with their scored setups, yesterday's passes judged 24 h on, and running v2 totals per instrument.
 Same pass bar as below. Spot check on real bars (rules only, not evidence): on 2026-10-27 10:00/14:00 and 10-28 06:00 v2 gave
 no setup where v1's lean sold into the floor.
 

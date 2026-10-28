@@ -207,3 +207,24 @@ def test_a_setup_the_risk_check_refuses_is_still_scored(m1):
     rej = call["baselines"]["rejected_setup"]
     assert call["decision"] == "PASS" and "need 1.5R" in rej["rejected_because"] and rej["plan"]["entry"] == low_rr["entry"]
     assert "rejected_setup" in J.score_entries([call], m1, CFG, WED + pd.Timedelta(hours=1))[0]["scores"]
+
+
+# ---------------- Telegram reports ----------------
+def test_slot_digest_lists_calls_and_passes(tmp_path, monkeypatch, m1):
+    from gold_agents import reports
+    c = ctx(m1)
+    setup = {"direction": "BUY", "entry_type": "limit", "entry": round(c.price - 4, 2), "stop": round(c.price - 14, 2),
+             "tp1": round(c.price + 16, 2), "tp2": round(c.price + 30, 2), "valid_hours": 6, "why": "retest"}
+    buy = V.decide_at(m1, WED, CFG, llm=FakeLLM(replies={"price structure": {"bias": 0.6, "confidence": 0.7, "read": "up", "setup": setup},
+                                                        "Master trader": {"decision": "PLACE", "confidence": 0.8, "reason": "structure up"}},
+                                               default={"score": 0, "confidence": 0.1, "summary": "flat"}), events=[])
+    pas = V.decide_at(m1, WED, CFG, llm=FakeLLM(default={"bias": 0, "confidence": 0.2, "read": "mid", "setup": {"entry_type": "none", "why": "mid-range"},
+                                                        "score": 0, "summary": "x"}), events=[])
+    paths = {"XAU_USD": tmp_path / "g.jsonl", "XAG_USD": tmp_path / "s.jsonl"}
+    J.append(buy, paths["XAU_USD"]); J.append({**pas, "instrument": "XAG_USD"}, paths["XAG_USD"])
+    monkeypatch.setattr(V, "journal_path", lambda spec: paths.get(spec.oanda, tmp_path / "none.jsonl"))
+    text = reports.slot_digest(str(WED), ["XAU_USD", "XAG_USD", "EUR_USD"])
+    assert "1 call, 1 pass" in text and "GOLD: BUY LIMIT" in text and "SILVER: PASS" in text and "mid-range" in text
+    card = reports.scorecard(str(WED.date()), ["XAU_USD", "XAG_USD"], loader=lambda name: m1)
+    assert "GOLD" in card and "BUY limit" in card and "SILVER" in card and "PASS" in card and len(card) <= reports.TG_LIMIT
+    assert reports.slot_digest("2020-01-01T06:00:00Z", ["XAU_USD"]) is None

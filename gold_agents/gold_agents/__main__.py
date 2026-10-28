@@ -90,6 +90,28 @@ def cmd_score(args):
         print("Nothing is judged under 30 resolved calls per strategy.")
 
 
+def cmd_digest(args):
+    """One Telegram message for a slot: every instrument's v2 decision, calls and passes."""
+    from . import reports
+    text = reports.slot_digest(args.as_of, args.instruments.split(","))
+    if text is None:
+        print("nothing logged for this slot")
+        return
+    print(text)
+    if args.send:
+        notify.send(text)
+
+
+def cmd_scorecard(args):
+    """End-of-day v2 scorecard to Telegram."""
+    from . import reports
+    day = args.day or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    text = reports.scorecard(day, args.instruments.split(","))
+    print(text)
+    if args.send:
+        notify.send(text)
+
+
 def cmd_dashboard(args):
     from . import dashboard
     spec = I.get(args.instrument)
@@ -131,6 +153,11 @@ def main(argv=None):
     r.add_argument("--notify", action="store_true"); r.add_argument("--allow-leaky", action="store_true"); r.set_defaults(fn=cmd_run)
     s = sub.add_parser("score"); s.add_argument("--now"); s.set_defaults(fn=cmd_score)
     d = sub.add_parser("dashboard"); d.set_defaults(fn=cmd_dashboard)
+    ALL = ",".join(I.INSTRUMENTS)
+    g = sub.add_parser("digest"); g.add_argument("--as-of", required=True); g.add_argument("--instruments", default=ALL)
+    g.add_argument("--send", action="store_true"); g.set_defaults(fn=cmd_digest)
+    c = sub.add_parser("scorecard"); c.add_argument("--day"); c.add_argument("--instruments", default=ALL)
+    c.add_argument("--send", action="store_true"); c.set_defaults(fn=cmd_scorecard)
     p = sub.add_parser("replay"); p.add_argument("--start", required=True); p.add_argument("--end", required=True)
     p.add_argument("--step-hours", type=int, default=4); p.add_argument("--llm", action="store_true"); p.set_defaults(fn=cmd_replay)
     args = ap.parse_args(argv)

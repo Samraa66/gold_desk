@@ -28,13 +28,21 @@ INSTRUMENTS="${GOLD_INSTRUMENTS:-XAU_USD XAG_USD EUR_USD GBP_USD}"
       step "dashboard-$INST" .venv/bin/python -m gold_agents --instrument "$INST" dashboard
       # v2 (2026-10-28): reads the candles + structure, calls setups at levels. Only the model's call is sent to Telegram.
       step "v2-rules-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" run --as-of "$AS_OF" --rules-only
-      step "v2-model-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" run --as-of "$AS_OF" --llm --notify
+      step "v2-model-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" run --as-of "$AS_OF" --llm
       step "v2-score-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" score
       step "v2-dashboard-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" dashboard
     else
       echo "bar refresh failed for $INST; its calls were skipped"
     fi
   done
+} >> journal/cycle.log 2>&1
+# Telegram (2026-10-28): one message per slot with every instrument's v2 decision, calls and passes; after the last
+# slot of the day (18:00 UTC) the day's scorecard.
+{
+  step "v2-digest" .venv/bin/python -m gold_agents digest --as-of "$AS_OF" --instruments "${INSTRUMENTS// /,}" --send
+  if [ "${AS_OF:11:2}" = "18" ]; then
+    step "v2-scorecard" .venv/bin/python -m gold_agents scorecard --instruments "${INSTRUMENTS// /,}" --send
+  fi
 } >> journal/cycle.log 2>&1
 # One message per failed cycle (never per step). PASS stays silent, so this is how a broken job gets noticed.
 if [ -n "$FAILED" ]; then
