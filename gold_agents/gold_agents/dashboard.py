@@ -36,7 +36,9 @@ td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}.pill{display:inlin
 
 LABELS = {"master": "master (the call)",
           "chart_lean": "chart lean, no vetoes (shadow, every slot)",
-          "chart_macro": "chart lean + macro not against (shadow)"}
+          "chart_macro": "chart lean + macro not against (shadow)",
+          "chart_setup": "chart's own setup, no master (v2 shadow)",
+          "rules_setup": "rules structure setup (v2 shadow)"}
 
 
 def _fmt_r(x):
@@ -140,14 +142,21 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
         lose = ("falls" if buy else "rises")
         win = ("rises" if buy else "falls")
         fill = (f' · scored as filled at <b>{sc["fill"]:.{DP}f}</b> (open of the next bar, adjusted for assumed spread and slippage)' if sc.get("fill") else "")
-        entry_line = f'<div class="lv">Entry <b>{p["entry"]:.{DP}f}</b> at {t0:%Y-%m-%d %H:%M} UTC (price when the call was made){fill}</div>'
+        if p.get("entry_type", "market") != "market":      # desk v2: an order at a level, filled only if price gets there
+            kind = {"limit": "LIMIT", "stop": "STOP"}[p["entry_type"]]
+            got = (f' · filled at {sc["filled_at"][11:16]} UTC, scored at <b>{sc["fill"]:.{DP}f}</b> after assumed costs' if sc.get("filled_at") else "")
+            entry_line = (f'<div class="lv">{kind} order at <b>{p["entry"]:.{DP}f}</b>, placed {t0:%Y-%m-%d %H:%M} UTC, valid until '
+                          f'{str(p.get("valid_until"))[11:16]} UTC (price was {e["price"]:.{DP}f}){got}</div>')
+        else:
+            entry_line = f'<div class="lv">Entry <b>{p["entry"]:.{DP}f}</b> at {t0:%Y-%m-%d %H:%M} UTC (price when the call was made){fill}</div>'
         rule = (entry_line + f'<div class="lv">Wins if {spec.label} {win} to <b>{p["tp1"]:.{DP}f}</b> (TP1) · loses if it {lose} to <b>{p["stop"]:.{DP}f}</b> (stop) · '
                 f'bigger target {p["tp2"]:.{DP}f}</div>')
         if sc.get("closed_at"):
             ca = pd.Timestamp(sc["closed_at"])
             mins = int((ca - t0).total_seconds() // 60)
             took = f"{mins} min" if mins < 120 else f"{mins / 60:.1f} h"
-            verb = {"win": "Target hit", "loss": "Stopped out", "expired": "Expired after 48h, closed at market"}[outcome]
+            verb = {"win": "Target hit", "loss": "Stopped out", "expired": "Expired after 48h, closed at market",
+                    "unfilled": "Order never filled; cancelled"}[outcome]
             line = f"{verb} at {str(ca)[11:16]} UTC, {took} after the call: {_fmt_r(sc.get('r'))}."
             later = ""
             if outcome == "loss":
@@ -160,7 +169,7 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
             outline = f'<div class="{outcome}" style="margin-top:6px"><b>{outcome.upper()}</b> {line}{later}</div>'
         else:
             outline = (f'<div class="{outcome}" style="margin-top:6px"><b>{outcome.upper()}</b> '
-                       f'{"Still running: neither level hit yet." if outcome == "open" else "Waiting for the first bar after the call."}</div>')
+                       f'{"Still running: neither level hit yet." if outcome == "open" else "Order placed, price has not reached it yet." if outcome == "waiting" else "Waiting for the first bar after the call."}</div>')
         body.append(
             f'<div class="card call"><div><span class="pill {e["decision"]}">{word}</span> '
             f'<b style="font-size:17px">entry {p["entry"]:.{DP}f}</b> <span class="sub">· {html.escape(e["as_of"][:16].replace("T", " "))} UTC · {e["mode"]}</span>'
@@ -169,7 +178,7 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
             f'<p class="reason">{html.escape(e["reason"])}</p></div>'
             f'<div>{_chart(e, m1, now, sc.get("closed_at"), outcome)}</div></div>')
     body.append(f"<h2>PASS decisions ({len(passes)})</h2><div class=card><table><tr><th>Time (UTC)</th><th>Mode</th><th>Chart lean</th><th>Why</th></tr>"
-                + "".join(f"<tr><td>{html.escape(e['as_of'][:16].replace('T', ' '))}</td><td>{e['mode']}</td><td>{((e.get('baselines') or {}).get('chart_lean') or {}).get('direction', '—')}</td><td>{html.escape(e['reason'])}</td></tr>"
+                + "".join(f"<tr><td>{html.escape(e['as_of'][:16].replace('T', ' '))}</td><td>{e['mode']}</td><td>{(((e.get('baselines') or {}).get('chart_lean') or (e.get('baselines') or {}).get('chart_setup')) or {}).get('direction', '—')}</td><td>{html.escape(e['reason'])}</td></tr>"
                           for e in passes[:40]) + "</table></div>")
     page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{html.escape(spec.label)} desk log</title><style>{CSS}</style></head><body><main>{"".join(body)}</main></body></html>')

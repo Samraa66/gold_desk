@@ -14,6 +14,7 @@ from . import llm as L
 from . import macro_data, notify
 from .config import Config
 from .data import load_m1
+from . import desk_v2
 from .runner import card, decide_at, watch_text
 
 
@@ -40,7 +41,7 @@ def should_watch(call: dict, wrote: bool, flag: bool) -> bool:
 def _setup(args):
     """-> (spec, cfg, journal path, m1). Gold uses its original log unless --journal says otherwise."""
     spec = I.get(args.instrument)
-    journal = args.journal or spec.journal_path
+    journal = args.journal or (desk_v2.journal_path(spec) if args.desk == "v2" else spec.journal_path)
     return spec, spec.config(), journal, load_m1(instrument=spec.oanda)
 
 
@@ -54,16 +55,17 @@ def cmd_run(args):
     if llm is not None and as_of < pd.Timestamp(datetime.now(timezone.utc)) - pd.Timedelta(hours=6) and not args.allow_leaky:
         sys.exit("refusing a model run on a past date: the model may remember how that day ended. Use --allow-leaky to override "
                  "(the call is then NOT forward evidence).")
-    call = decide_at(m1, as_of, cfg, llm=llm, macro_df=macro_data.macro_frame(as_of.to_pydatetime()),
-                     prior_entries=J.load(args.journal))
-    print(card(call))
+    decide, show = (desk_v2.decide_at, desk_v2.card) if args.desk == "v2" else (decide_at, card)
+    call = decide(m1, as_of, cfg, llm=llm, macro_df=macro_data.macro_frame(as_of.to_pydatetime()),
+                  prior_entries=J.load(args.journal))
+    print(show(call))
     if args.dry:
         return
     wrote = J.append(call, args.journal)
     print("logged" if wrote else "already logged for this time, rules and mode; nothing written")
     if should_notify(call, wrote, args.notify):
-        notify.send(card(call))
-    elif should_watch(call, wrote, args.notify):
+        notify.send(show(call))
+    elif args.desk != "v2" and should_watch(call, wrote, args.notify):
         notify.send(watch_text(call))
 
 
@@ -86,7 +88,9 @@ def cmd_score(args):
 def cmd_dashboard(args):
     from . import dashboard
     spec = I.get(args.instrument)
-    out = dashboard.build(args.journal or spec.journal_path, spec.dashboard_path, instrument=spec.oanda)
+    v2 = args.desk == "v2"
+    out = dashboard.build(args.journal or (desk_v2.journal_path(spec) if v2 else spec.journal_path),
+                          desk_v2.dashboard_path(spec) if v2 else spec.dashboard_path, instrument=spec.oanda)
     print(f"wrote {out}")
 
 
@@ -115,6 +119,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="gold_agents")
     ap.add_argument("--journal", type=Path, default=None)
     ap.add_argument("--instrument", default="XAU_USD", help="XAU_USD (default), XAG_USD, EUR_USD, GBP_USD")
+    ap.add_argument("--desk", default="v1", choices=("v1", "v2"), help="v1 (original record) or v2 (reads the chart, setups at levels)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--as-of"); r.add_argument("--llm", action="store_true")
     r.add_argument("--rules-only", action="store_true"); r.add_argument("--dry", action="store_true")

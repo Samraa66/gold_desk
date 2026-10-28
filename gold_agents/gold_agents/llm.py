@@ -21,10 +21,11 @@ def parse_json(text: str) -> dict:
     if fenced:
         text = fenced.group(1)
     else:
-        start, end = text.find("{"), text.rfind("}")
-        if start == -1 or end <= start:
+        start = text.find("{")
+        if start == -1:
             raise ValueError(f"no JSON object in model reply: {text[:120]!r}")
-        text = text[start:end + 1]
+        # The FIRST complete object: a reply that adds a note (or a second object) after it used to fail with "Extra data".
+        return json.JSONDecoder().raw_decode(text[start:])[0]
     return json.loads(text)
 
 

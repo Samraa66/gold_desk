@@ -64,6 +64,29 @@ Bars come from `../gold_bot/data/` (HistData M1 history through 2026-10-09, MT5 
 refreshed: open MetaTrader 5 on the demo account and run `scripts/run_cycle.sh`. That script has not been run.
 D1 is a UTC-midnight day, an approximation of the New York 17:00 rollover.
 
+## Desk v2: it reads the chart (2026-10-28)
+v1's chart agent never saw a candle: ten summary numbers (EMA-cross trend signs on H4/H1, a 20-day breakout position,
+momentum, ATR, five levels), plus the rule score handed to the model as an anchor. From 2026-10-26 to 10-28 its lean went
+0 wins / 16 losses (-16.5R): one correlated bet, SELL into a 3,975-3,989 floor that held five times while gold bounced to
+4,070. In its own summaries it saw the support, then leaned short anyway. The desk itself passed every time; the WATCH
+messages carried the lean to Telegram.
+
+v2 (`gold_agents/desk_v2.py`, `gold_agents/structure.py`, run with `--desk v2`) changes three things:
+1. **The chart agent reads the chart**: the last 30 D1, 60 H4, 48 H1 and 32 M15 candles, plus computed structure (fractal
+   swings in order, HH/HL vs LH/LL per timeframe, support/resistance zones clustered from swings with touch counts, where
+   price sits between support and resistance). No rule score in its prompt. Model: `deep_model`.
+2. **A call is a setup**: market, LIMIT at a zone or STOP beyond a level, stop beyond structure, TP1 at least `min_rr` (1.5) R,
+   valid up to 24 h. "none" is the normal answer. Rules mode trades the H4 swing pattern from a zone and refuses to trade into
+   a zone touched twice or more right next to price.
+3. **The scorer fills a pending order only if price reaches it** (`journal._score_pending`): unfilled orders are counted
+   apart and are never a win or a loss; fill and stop in one bar is a loss; the fill bar never pays the target.
+
+Own hash (`desk_v2.v2_hash`, includes v1's), own logs `journal/calls_v2*.jsonl` and dashboards `dashboard_v2*.html`; shadows
+`chart_setup` (the chart's setup with no master) and `rules_setup`. Macro and liquidity agents are v1's. v1 keeps running,
+logged silently, as the comparison. Only v2's model call is sent to Telegram (a card with the order type, level and expiry).
+Same pass bar as below. Spot check on real bars (rules only, not evidence): on 2026-10-27 10:00/14:00 and 10-28 06:00 v2 gave
+no setup where v1's lean sold into the floor.
+
 ## Rules fixed before any live result (2026-10-21)
 Costs: spread 0.60 + slippage 0.30 in the scorer (the demo's real median is ~0.21; the conservative figure stays until
 the user's real broker demo is measured). A win exits at TP1; stop beats target inside one bar; unresolved after 48 h

@@ -21,10 +21,16 @@ INSTRUMENTS="${GOLD_INSTRUMENTS:-XAU_USD XAG_USD EUR_USD GBP_USD}"
   for INST in $INSTRUMENTS; do
     echo "--- $INST"
     if step "bars-$INST" .venv/bin/python -m gold_agents.oanda_data auto "$INST"; then
-      step "rules-$INST" .venv/bin/python -m gold_agents --instrument "$INST" run --as-of "$AS_OF" --rules-only --notify
-      step "model-$INST" .venv/bin/python -m gold_agents --instrument "$INST" run --as-of "$AS_OF" --llm --notify
+      # v1: the original record, logged silently since 2026-10-28 (its WATCH leans went 0 for 16; v2 sends the messages)
+      step "rules-$INST" .venv/bin/python -m gold_agents --instrument "$INST" run --as-of "$AS_OF" --rules-only
+      step "model-$INST" .venv/bin/python -m gold_agents --instrument "$INST" run --as-of "$AS_OF" --llm
       step "score-$INST" .venv/bin/python -m gold_agents --instrument "$INST" score
       step "dashboard-$INST" .venv/bin/python -m gold_agents --instrument "$INST" dashboard
+      # v2 (2026-10-28): reads the candles + structure, calls setups at levels. Only the model's call is sent to Telegram.
+      step "v2-rules-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" run --as-of "$AS_OF" --rules-only
+      step "v2-model-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" run --as-of "$AS_OF" --llm --notify
+      step "v2-score-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" score
+      step "v2-dashboard-$INST" .venv/bin/python -m gold_agents --desk v2 --instrument "$INST" dashboard
     else
       echo "bar refresh failed for $INST; its calls were skipped"
     fi
