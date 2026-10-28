@@ -294,3 +294,22 @@ def test_the_rules_reach_the_model_prompt(m1):
     V.decide_at(m1, WED, CFG, llm=fake, events=[])
     p = next(c for c in fake.calls if "price structure" in c["system"])
     assert "lows rising one after another" in p["system"] and "short_sequence" in p["user"] and "after a high-impact release" in p["system"]
+
+
+
+def test_feed_page_shows_each_slot_with_its_score(tmp_path, monkeypatch, m1):
+    from gold_agents import reports
+    c = ctx(m1)
+    setup = {"direction": "BUY", "entry_type": "limit", "entry": round(c.price - 4, 2), "stop": round(c.price - 14, 2),
+             "tp1": round(c.price + 16, 2), "tp2": round(c.price + 30, 2), "valid_hours": 6, "why": "retest"}
+    buy = V.decide_at(m1, WED, CFG, llm=FakeLLM(replies={"price structure": {"bias": 0.6, "confidence": 0.7, "read": "up", "setup": setup},
+                                                        "Master trader": {"decision": "PLACE", "confidence": 0.8, "reason": "structure up"}},
+                                               default={"score": 0, "confidence": 0.1, "summary": "flat"}), events=[], v2=NOFILT)
+    path = tmp_path / "g.jsonl"
+    J.append(buy, path)
+    monkeypatch.setattr(V, "journal_path", lambda spec: path if spec.oanda == "XAU_USD" else tmp_path / "none.jsonl")
+    out = tmp_path / reports.FEED_NAME
+    reports.feed_html(["XAU_USD", "XAG_USD"], out, days=3650, loader=lambda name: m1, now_utc=WED.to_pydatetime())
+    page = out.read_text()
+    assert "Running totals" in page and "BUY LIMIT" in page and "structure up" in page
+    assert ("WIN" in page or "LOSS" in page or "running" in page or "waiting" in page or "never filled" in page)

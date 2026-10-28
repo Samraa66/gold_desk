@@ -112,6 +112,13 @@ def cmd_scorecard(args):
         notify.send(text)
 
 
+def cmd_feed(args):
+    """The Telegram feed as a page, with scores (journal/dashboard_v2_digest.html)."""
+    from . import reports
+    out = I.get("XAU_USD").journal_path.with_name(reports.FEED_NAME)
+    print("wrote", reports.feed_html(args.instruments.split(","), out, days=args.days))
+
+
 def cmd_dashboard(args):
     from . import dashboard
     spec = I.get(args.instrument)
@@ -158,6 +165,8 @@ def main(argv=None):
     g.add_argument("--send", action="store_true"); g.set_defaults(fn=cmd_digest)
     c = sub.add_parser("scorecard"); c.add_argument("--day"); c.add_argument("--instruments", default=ALL)
     c.add_argument("--send", action="store_true"); c.set_defaults(fn=cmd_scorecard)
+    f = sub.add_parser("feed"); f.add_argument("--instruments", default=ALL); f.add_argument("--days", type=int, default=7)
+    f.set_defaults(fn=cmd_feed)
     p = sub.add_parser("replay"); p.add_argument("--start", required=True); p.add_argument("--end", required=True)
     p.add_argument("--step-hours", type=int, default=4); p.add_argument("--llm", action="store_true"); p.set_defaults(fn=cmd_replay)
     args = ap.parse_args(argv)

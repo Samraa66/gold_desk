@@ -126,3 +126,97 @@ def scorecard(day: str, instruments: list[str], loader=None) -> str:
 
 def _fit(text: str) -> str:
     return text if len(text) <= TG_LIMIT else text[: TG_LIMIT - 20].rstrip() + "\n… (cut, see dashboard)"
+
+
+# ---------------------------------------------------------------- the same feed as a page, with scores
+FEED_NAME = "dashboard_v2_digest.html"       # matches the app's dashboard file pattern, so the Desk page lists it
+
+
+def _status(spec, sc: dict | None) -> tuple[str, str]:
+    """(css class, words) for one scored plan."""
+    if not sc:
+        return "pending", "not scored yet"
+    o = sc.get("outcome")
+    r = f" {sc['r']:+.2f}R" if sc.get("r") is not None else ""
+    words = {"win": "WIN, target hit", "loss": "LOSS, stopped", "expired": "expired after 48h", "open": "filled, running",
+             "waiting": "order waiting for price", "unfilled": "never filled, cancelled", "pending": "pending"}.get(o, o)
+    return o if o in ("win", "loss") else "open", f"{words}{r}"
+
+
+def feed_html(instruments: list[str], out, days: int = 7, loader=None, now_utc=None) -> str:
+    """Every slot of the last `days`, newest first, each instrument's v2 model decision as the Telegram digest said it,
+    with how it has scored since: the call's result, or for a PASS the setup it skipped (scored anyway) and what price
+    did in the 24 h after. Running totals on top. Read-only, regenerated every cycle."""
+    import html as H
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from .dashboard import CSS
+    from .data import load_m1
+    loader = loader or (lambda name: load_m1(instrument=name))
+    now_utc = now_utc or datetime.now(timezone.utc)
+    since = pd.Timestamp(now_utc) - pd.Timedelta(days=days)
+    slots: dict[str, list] = {}
+    totals = []
+    for name in instruments:
+        spec = I.get(name)
+        entries = J.load(desk_v2.journal_path(spec))
+        model = [e for e in entries if e["mode"] == "llm"]
+        if not model:
+            continue
+        m1 = loader(name)
+        scored = J.score_entries(model, m1, spec.config(), m1.index[-1] + pd.Timedelta(minutes=1))
+        s = J.summarize(scored)
+        ps = J.summarize_passes(scored)
+        totals.append((spec, s, ps))
+        for e in scored:
+            if pd.Timestamp(e["as_of"]) >= since:
+                slots.setdefault(e["as_of"], []).append((spec, e))
+    rows = []
+    for spec, s, ps in totals:
+        def cell(k):
+            v = s.get(k)
+            return "—" if not v or not v.get("calls") else (f"{v['wins']}W {v['losses']}L · {v['still_open']} open · "
+                                                          f"{'—' if v['avg_r'] is None else format(v['avg_r'], '+.2f') + 'R avg'}")
+        pj = "—" if not ps.get("passes_judged") else f"{ps['quiet_after']} quiet / {ps['big_move_after']} big move"
+        rows.append(f"<tr><td><b>{H.escape(spec.label)}</b></td><td>{cell('master')}</td><td>{cell('chart_setup')}</td>"
+                    f"<td>{cell('rejected_setup')}</td><td>{cell('rules_setup')}</td><td>{pj}</td></tr>")
+    body = [f"<h1>Desk v2 · feed</h1><div class=sub>What Telegram received each slot, with the score since. Updated "
+            f"{now_utc:%Y-%m-%d %H:%M} UTC · last {days} days · research only, no orders are placed</div>",
+            '<div class="note">Nothing is judged under 30 resolved calls. R is after assumed costs. A PASS is scored by the setup '
+            'the desk skipped (if any) and by what price did in the next 24 h.</div>',
+            "<h2>Running totals (model)</h2><div class=card><table><tr><th>Instrument</th><th>Calls</th><th>Chart setups (incl. passed)</th>"
+            "<th>Refused setups</th><th>Rules setups</th><th>Passes, 24h on</th></tr>" + "".join(rows) + "</table></div>"]
+    if not slots:
+        body.append('<div class="card sub">No slots in this window yet.</div>')
+    for as_of in sorted(slots, reverse=True):
+        items = []
+        for spec, e in sorted(slots[as_of], key=lambda x: list(I.INSTRUMENTS).index(x[0].oanda)):
+            label = H.escape(spec.label.split(" (")[0].upper() if "(" in spec.label else spec.label)
+            if e["decision"] in ("BUY", "SELL"):
+                cls, words = _status(spec, e["scores"].get("master"))
+                items.append(f'<div class=card><span class="pill {e["decision"]}">{e["decision"]}</span> <b>{label}</b> '
+                             f'<span class=lv>{H.escape(_order(spec, e["plan"]))}</span><div class="{cls}"><b>{H.escape(words)}</b></div>'
+                             f'<p class=reason>{H.escape(_cut(e["reason"], 400))}</p></div>')
+                continue
+            extra = ""
+            shadow = next(((k, (e.get("baselines") or {}).get(k)) for k in ("chart_setup", "rejected_setup") if (e.get("baselines") or {}).get(k)), None)
+            if shadow:
+                k, b = shadow
+                cls, words = _status(spec, e["scores"].get(k))
+                why = f" (refused: {H.escape(b.get('rejected_because', ''))})" if k == "rejected_setup" else ""
+                extra += (f'<div class=lv>Skipped setup: {H.escape(_order(spec, b["plan"]))}{why}</div>'
+                          f'<div class="{cls}">Had it been taken: <b>{H.escape(words)}</b></div>')
+            a = e.get("after")
+            if a and a.get("net_atr") is not None:
+                big = abs(a["net_atr"]) >= 3
+                extra += (f'<div class="{"loss" if big else "sub"}">Next 24h: {a["net_atr"]:+.1f} ATR net '
+                          f'(up {a["up_atr"]:.1f}, down {a["down_atr"]:.1f}){" · a big move the desk sat out" if big else " · quiet, passing was fine"}</div>')
+            else:
+                extra += '<div class=sub>Next 24h: window not closed yet</div>'
+            items.append(f'<div class=card><span class="pill">PASS</span> <b>{label}</b><p class=reason>{H.escape(_cut(e["reason"], 400))}</p>{extra}</div>')
+        body.append(f"<h2>{as_of[:16].replace('T', ' ')} UTC</h2>" + "".join(items))
+    page = (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            f'<title>Desk v2 feed</title><style>{CSS}</style></head><body><main>{"".join(body)}</main></body></html>')
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    Path(out).write_text(page, encoding="utf-8")
+    return str(out)

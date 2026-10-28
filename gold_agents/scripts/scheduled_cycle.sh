@@ -40,6 +40,7 @@ INSTRUMENTS="${GOLD_INSTRUMENTS:-XAU_USD XAG_USD EUR_USD GBP_USD}"
 # slot of the day (18:00 UTC) the day's scorecard.
 {
   step "v2-digest" .venv/bin/python -m gold_agents digest --as-of "$AS_OF" --instruments "${INSTRUMENTS// /,}" --send
+  step "v2-feed" .venv/bin/python -m gold_agents feed --instruments "${INSTRUMENTS// /,}"
   if [ "${AS_OF:11:2}" = "18" ]; then
     step "v2-scorecard" .venv/bin/python -m gold_agents scorecard --instruments "${INSTRUMENTS// /,}" --send
   fi
