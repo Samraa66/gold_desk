@@ -1,4 +1,4 @@
-"""python -m gold_agents run|score|replay|report  (run from research/gold_agents)"""
+"""python -m gold_agents run|score|replay|report  (run from gold_agents)"""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,7 @@ def _llm(args):
         return None
     client = L.from_env()
     if client is None and args.llm:
-        sys.exit("--llm needs ANTHROPIC_API_KEY (env or research/gold_agents/.env)")
+        sys.exit("--llm needs ANTHROPIC_API_KEY (env or gold_agents/.env)")
     return client if args.llm else None
 
 

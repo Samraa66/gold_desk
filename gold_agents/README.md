@@ -39,7 +39,7 @@ tests/                  45 offline tests (no network, no key, no MT5)
 
 ## Setup and use
 ```bash
-cd research/gold_agents
+cd gold_agents
 /opt/miniconda3/bin/python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt   # already done on this Mac
 .venv/bin/python -m pytest -q                       # 45 pass
 .venv/bin/python -m gold_agents run --dry           # make a call, print it, write nothing
@@ -48,7 +48,7 @@ cd research/gold_agents
 .venv/bin/python -m gold_agents score               # score the log against later bars, vs the baselines
 .venv/bin/python -m gold_agents replay --start 2026-08-17 --end 2026-10-07   # plumbing check only
 ```
-Keys go in `research/gold_agents/.env` (gitignored): `ANTHROPIC_API_KEY=`, optional `FRED_API_KEY=` (free; real
+Keys go in `gold_agents/.env` (gitignored): `ANTHROPIC_API_KEY=`, optional `FRED_API_KEY=` (free; real
 yields are gold's main driver), optional `GOLD_TG_TOKEN=` + `GOLD_TG_CHAT=` for Telegram cards (use a NEW bot, never a
 client's). **No Anthropic key was found on this machine in the old gold projects (all empty), so model mode has only
 been exercised against a fake model.** Rules mode is what ran.

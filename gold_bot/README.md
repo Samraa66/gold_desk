@@ -26,7 +26,7 @@ already receive have an edge worth learning from?
 
 ## Setup
 Own environment, separate from the product:
-    cd research/gold_bot && python3 -m venv .venv && source .venv/bin/activate
+    cd gold_bot && python3 -m venv .venv && source .venv/bin/activate
     pip install -r requirements.txt
 
 ## Status (updated 2026-10-13)

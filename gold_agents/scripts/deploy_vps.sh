@@ -12,7 +12,7 @@ rsync -a --delete -e "$SSH" --exclude .venv --exclude journal --exclude .env --e
 rsync -a -e "$SSH" "$SRC/data/" "$HOST:$H/gold_agents/data/"
 # one-time seeds (never overwritten once present)
 $SSH "$HOST" "[ -f $H/gold_agents/.env ]" || rsync -a -e "$SSH" "$SRC/.env" "$HOST:$H/gold_agents/.env"
-$SSH "$HOST" "[ -f $H/gold_bot/data/xauusd_m1_histdata.parquet ]" || rsync -a -e "$SSH" "$HOME/gold_desk/gold_bot/data/xauusd_m1_histdata.parquet" "$HOST:$H/gold_bot/data/"
+$SSH "$HOST" "[ -f $H/gold_bot/data/xauusd_m1_histdata.parquet ]" || rsync -a -e "$SSH" "$SRC/../gold_bot/data/xauusd_m1_histdata.parquet" "$HOST:$H/gold_bot/data/"
 $SSH "$HOST" "chown -R golddesk:golddesk /home/golddesk && chmod 600 $H/gold_agents/.env"
 $SSH "$HOST" "[ -x $H/gold_agents/.venv/bin/python ] || runuser -u golddesk -- bash -c 'python3 -m venv $H/gold_agents/.venv && $H/gold_agents/.venv/bin/pip install -q -r $H/gold_agents/requirements.txt'"
 rsync -a -e "$SSH" "$SRC/scripts/systemd/" "$HOST:/etc/systemd/system/"

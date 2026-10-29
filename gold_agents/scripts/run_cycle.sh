@@ -1,6 +1,6 @@
 #!/bin/bash
 # One scheduled cycle: refresh bars, make a call, log it, score the log.
-# Bars come from OANDA (OANDA_API_TOKEN in research/gold_agents/.env) unless BAR_SOURCE=mt5, which needs the MT5
+# Bars come from OANDA (OANDA_API_TOKEN in gold_agents/.env) unless BAR_SOURCE=mt5, which needs the MT5
 # terminal open on the DEMO account. UNVERIFIED end to end: run it once by hand and read the output before scheduling it.
 #   scripts/run_cycle.sh            rules-only call (no API key needed)
 #   scripts/run_cycle.sh --llm      agents + master use the model (needs ANTHROPIC_API_KEY)

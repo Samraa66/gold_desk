@@ -10,7 +10,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 HOST="${GOLD_VPS:-root@138.68.188.28}"; KEY="${GOLD_VPS_KEY:-$HOME/.ssh/telegram_bot_vps}"
 ENVF=/home/golddesk/gold_desk/gold_agents/.env
 looks_like_token() { case "$1" in [0-9]*:*[A-Za-z0-9_-]) [ "${#1}" -ge 40 ] && [ "${#1}" -le 70 ] ;; *) return 1 ;; esac; }
-# token source: GOLD_TG_TOKEN in the local research/gold_agents/.env (easiest), else the clipboard
+# token source: GOLD_TG_TOKEN in the local gold_agents/.env (easiest), else the clipboard
 TOKEN="$(grep -E '^GOLD_TG_TOKEN=' "$HERE/../.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '[:space:]"'"'"'' || true)"
 looks_like_token "$TOKEN" || TOKEN="$(pbpaste | tr -d '[:space:]')"
 if ! looks_like_token "$TOKEN"; then

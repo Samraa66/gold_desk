@@ -1,5 +1,5 @@
 #!/bin/bash
-# Fired every hour by launchd (com.telelytics.golddesk). Acts only at 06/10/14/18 UTC on weekdays:
+# Fired by the golddesk.timer on the VPS (or hourly by launchd on a Mac). Acts only at 06/10/14/18 UTC on weekdays:
 # refresh bars once, make the rules call and the model call on the SAME timestamp, score the log, rebuild the dashboard.
 # Output goes to journal/cycle.log. A repeated time/mode/rules is never logged twice (idempotent).
 set -uo pipefail

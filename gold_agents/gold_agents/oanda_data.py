@@ -4,7 +4,7 @@ Writes the same shape the MT5 export wrote (bid OHLC, `spread` in points where 1
 its own file, so OANDA and MT5 prices are never mixed inside one file. `data.load_m1` lets OANDA win on a
 shared minute. Only COMPLETE candles are stored, so the forming bar never reaches an agent.
 
-Token: OANDA_API_TOKEN (env or research/gold_agents/.env). OANDA_ENV=practice|live (default practice).
+Token: OANDA_API_TOKEN (env or gold_agents/.env). OANDA_ENV=practice|live (default practice).
 """
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def refresh(since: pd.Timestamp, path: Path = OANDA_CSV, session=requests, now: 
             instrument: str = "XAU_USD") -> str:
     token = _env("OANDA_API_TOKEN")
     if not token:
-        raise SystemExit("OANDA_API_TOKEN is not set (env or research/gold_agents/.env)")
+        raise SystemExit("OANDA_API_TOKEN is not set (env or gold_agents/.env)")
     env = (_env("OANDA_ENV") or "practice").lower()
     if env not in HOSTS:
         raise SystemExit(f"OANDA_ENV must be practice or live, not {env!r}")
