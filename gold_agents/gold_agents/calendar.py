@@ -99,6 +99,37 @@ def market_window(as_of: datetime) -> tuple[str, str | None]:
     return "open", None
 
 
+# Desk v3.1: hours in New York time, because the break moves an hour in UTC with US clock changes. OANDA gold bars measured
+# 2025-10 to 2026-10: last bar 16:59 New York, first bar about 18:04, daily and at the weekend. `market_window` above stays as
+# it is, so v1-v3 decide exactly as before.
+DESK_CLOSE = time(17, 0)      # New York: Friday's close and the start of the daily break
+DESK_OPEN = time(18, 0)       # New York: Sunday's reopen and the end of the daily break
+THIN_UNTIL = time(2, 0)       # New York: before this the market is Asia only (close enough to London's 06:00 UTC lead-in for a label)
+
+
+def desk_window(as_of: datetime) -> tuple[str, str | None]:
+    """('open'|'thin'|'break'|'closed', reason) in New York time: open Sunday 18:00 to Friday 17:00, shut 17:00-18:00 daily."""
+    t = as_of.astimezone(NY)
+    wd, hm = t.weekday(), t.time()
+    if wd == 5 or (wd == 4 and hm >= DESK_CLOSE) or (wd == 6 and hm < DESK_OPEN):
+        return "closed", "weekend: the market is shut (Friday 17:00 to Sunday 18:00 New York)"
+    if DESK_CLOSE <= hm < DESK_OPEN:
+        return "break", "daily break: no trading 17:00-18:00 New York"
+    if hm >= DESK_OPEN or hm < THIN_UNTIL:
+        return "thin", "Asia-only hours: thin, wider spread"
+    return "open", None
+
+
+def next_friday_close(as_of: datetime) -> datetime:
+    """The first Friday 17:00 New York strictly after `as_of`, in UTC: the time a v3.1 trade must be flat by."""
+    t = as_of.astimezone(NY)
+    d = t.date() + timedelta(days=(4 - t.weekday()) % 7)
+    close = datetime.combine(d, DESK_CLOSE, tzinfo=NY)
+    if close <= t:
+        close = datetime.combine(d + timedelta(days=7), DESK_CLOSE, tzinfo=NY)
+    return close.astimezone(UTC)
+
+
 def session(as_of: datetime) -> str:
     h = as_of.astimezone(UTC).hour
     if 7 <= h < 12:

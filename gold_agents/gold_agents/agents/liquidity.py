@@ -11,10 +11,12 @@ from ..context import Context
 from ..types import Report
 
 
-def run(ctx: Context) -> Report:
+def run(ctx: Context, window=cal.market_window) -> Report:
+    """`window` decides the hours: v1-v3 use `calendar.market_window`, v3.1 passes `calendar.desk_window` (New York time),
+    whose daily `break` is vetoed like `rollover`."""
     t = ctx.as_of.to_pydatetime()
     cfg = ctx.cfg
-    state, why = cal.market_window(t)
+    state, why = window(t)
     event = cal.blocking_event(t, cfg.event_before_min, cfg.event_after_min, ctx.events)
     age_min = (ctx.as_of - ctx.last_bar_end).total_seconds() / 60
     facts = {
@@ -26,7 +28,7 @@ def run(ctx: Context) -> Report:
         "events_file_age_days": cal.events_file_age_days(),
     }
     reasons = []
-    if state in ("closed", "rollover"):
+    if state in ("closed", "rollover", "break"):
         reasons.append(why)
     if event:
         reasons.append(f"high-impact event window: {event['name']}")

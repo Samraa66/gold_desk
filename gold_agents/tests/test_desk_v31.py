@@ -87,3 +87,43 @@ def test_plan_without_new_keys_scores_as_before():
                      pd.Timestamp("2026-11-02T00:00:00Z"))
     assert s["outcome"] == "expired" and s["closed_at"] == "2026-11-01 23:00:00+00:00"
     assert s["r"] == pytest.approx(round((3989.7 - 3950.6) / 100.0, 3))
+
+
+# ---------------- Task 3: market hours in New York time ----------------
+from datetime import datetime, timezone  # noqa: E402
+
+from gold_agents import calendar as cal  # noqa: E402
+from tests.conftest import make_m1  # noqa: E402
+
+
+def utc(s):
+    return datetime.fromisoformat(s).replace(tzinfo=timezone.utc)
+
+
+def test_desk_window_clock_change():
+    assert cal.desk_window(utc("2026-10-30T20:30"))[0] in ("open", "thin")     # Fri 16:30 New York (EDT): the last half hour trades
+    assert cal.desk_window(utc("2026-10-30T21:00"))[0] == "closed"             # Fri 17:00 New York: the week is over
+    assert cal.desk_window(utc("2026-10-31T15:00"))[0] == "closed"             # Saturday
+    assert cal.desk_window(utc("2026-11-01T22:30"))[0] == "closed"             # Sun 17:30 New York (EST from 11-01): not yet
+    assert cal.desk_window(utc("2026-11-01T23:05"))[0] == "thin"               # Sun 18:05 New York: the reopen
+    assert cal.desk_window(utc("2026-11-02T22:30"))[0] == "break"              # Mon 17:30 New York (EST)
+    assert cal.desk_window(utc("2026-10-27T21:30"))[0] == "break"              # Tue 17:30 New York (EDT)
+    assert cal.desk_window(utc("2026-11-03T08:00"))[0] == "open"               # Tue 03:00 New York: London
+    assert cal.desk_window(utc("2026-11-03T06:30"))[0] == "thin"               # Tue 01:30 New York: Asia
+
+
+def test_next_friday_close_after_clock_change():
+    assert cal.next_friday_close(utc("2026-11-02T10:00")) == utc("2026-11-06T22:00")
+    assert cal.next_friday_close(utc("2026-10-30T20:59")) == utc("2026-10-30T21:00")     # same Friday, before the close (EDT)
+    assert cal.next_friday_close(utc("2026-10-30T21:00")) == utc("2026-11-06T22:00")     # at the close: the next week's
+
+
+def test_liquidity_uses_given_window():
+    from gold_agents.agents import liquidity
+    from gold_agents.context import build_context
+    bars = make_m1(start="2026-10-01", days=30, seed=7)
+    ctx = build_context(bars, pd.Timestamp("2026-10-30T20:30:00Z"), Config())
+    assert liquidity.run(ctx).veto                                             # v1-v3's padded window: shut from Fri 20:00 UTC
+    rep = liquidity.run(ctx, window=cal.desk_window)
+    assert not rep.veto and rep.facts["market"] == "open"
+    assert liquidity.run(ctx, window=lambda t: ("break", "daily break")).veto
