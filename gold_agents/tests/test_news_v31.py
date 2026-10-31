@@ -238,3 +238,16 @@ def test_non_us_rows_are_central_banks_only():
     kept = [r["name"] for r in N.calendar_rows(rows)]
     assert not any("Unemployment" in k or "CPI" in k or "Inflation" in k for k in kept)
     assert len(kept) == 11
+
+
+def test_junk_seen_live_on_2026_10_31_is_dropped():
+    for t in ("Gold Rate Today in Tamil Nadu 1st November 2026 : 22 & 24 Carat, Todays Gold Price in Tamil Nadu - Business Today",
+              "Gold Rate Today In Bengaluru, Check Live 22 And 24 Carat Gold Price - NDTV Profit",
+              "Gold prices today (November 1st): Freefall, deepest drop in months. - Vietnam.vn",
+              "62-year-old woman's gold chain snatched while walking to temple in Kotwali area - The Times of India",
+              "Constable held for pledging gold, diverting cash seized in dowry death case - The Times of India",
+              "Deepavali cheer: Chennai gold prices falls by Rs 2,480 per sovereign - DT Next"):
+        assert not N.relevant(t), t
+    for t in ("Gold prices nosedive - Business Recorder", "Gold Price Drops Below Key Support as GLD ETF Outflows Jump as NFP Loom - Benzinga",
+              "U.S. Treasury, European Bond Yields Fall After Fed, ECB Hold - WSJ"):
+        assert N.relevant(t), t

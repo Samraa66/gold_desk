@@ -220,19 +220,18 @@ later version has judged it, because an unjudged input is how the 70.9% got in.
   fixed: the Fed feed (a BOM plus a wrong guessed charset failed the XML parse) and the Treasury URL (404; Treasury has no press-release feed, so this is Google's index of its press-release pages, which lags). The calendar
   filter was narrowed so a non-US `Unemployment Rate` cannot pass as a central bank. A source that later breaks shows as "unavailable".
 - Brief cost: one quick-model call per brief, up to a few a day on busy calendars.
-- `scripts/rules_reentry_check.py` (the plain-rules re-entry check on 2022-12 to 2026-08 bars, frozen `V31` numbers, one run) was written and
-  smoke-tested on synthetic bars only. It needs the gold bars, which the build machine did not have. Its output is a sanity
-  check, never evidence, and no number changes because of it.
+- `scripts/rules_reentry_check.py` ran once on real bars on 2026-10-31 (2022-12 to 2026-08, frozen `V31` numbers): 1,873 resolved,
+  W676 L1142 x55, avg -0.388R, every year negative. The plumbing works. It is a sanity check, never evidence for the model, and no
+  number changes because of it. Plain re-entry with fixed stops and no judgement does not pay, so the model has to add the edge.
+- The news trigger runs on titles, and a heavy day still passes about 60 relevant headlines in 24 h. The wake budget is the limit.
 
 **Before go-live (plan Task 11, not done on the branch).**
-- `scripts/deploy_vps.sh`: add `--exclude events_v31.csv` to the code rsync. It runs with `--delete` and excludes only `events.csv`, so
-  as it stands every deploy would delete or overwrite the server's wider calendar. Also install and enable `golddesk-news.timer`.
-  Note that a deploy copies `scripts/systemd/` and the new `watch_cycle.sh`, so the watcher moves to v3.1 on the first deploy.
-- `scripts/pull_dashboard.sh`: add `journal/brief_v31.jsonl` and the v3.1 dashboard. `golddesk-watch.service`: its description still says v3.
-- On the VPS: root-cause the positions reading from raw `positionBook` payloads; confirm the Fed, Treasury, FRED and CFTC sources
-  answer (or record them as unavailable); run `scripts/rules_reentry_check.py` once; run `--desk v31 run --dry --llm` and read the
-  saved prompts end to end against the spec's inputs list.
-- Read the Telelytics `gold_desk_routes.py` file listing for the v3.1 names (read only; report gaps to the owner).
+- A deploy copies `scripts/systemd/` and the new `watch_cycle.sh`, so the watcher moves to v3.1 on the first deploy, and it enables
+  `golddesk-news.timer`. `deploy_vps.sh`, `pull_dashboard.sh` and the watch service were updated for this on 2026-10-31.
+- Done from the Mac on 2026-10-31: positions cause, live source checks, re-entry check, dry run and a read of all four agents' prompts.
+- The Telelytics page (`gold_desk_routes.py`) serves only `dashboard_v3.html`, so after the move it shows v3's frozen page until that
+  repo adds `dashboard_v31.html`. That repo is not changed from here.
+- After the deploy (plan Task 11 Step 5): run `--dry` on the VPS, list timers, read the first ticks, and confirm the Sunday reopen and first brief.
 
 Commands (from `gold_agents/`): `.venv/bin/python -m gold_agents --desk v31 run --dry --llm` (one call, written nowhere),
 `--desk v31 score`, `--desk v31 dashboard`, `--desk v31 watch` (one tick), `--desk v31 news-poll` (one poll).

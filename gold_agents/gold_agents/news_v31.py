@@ -33,7 +33,7 @@ DRIVERS = re.compile(
 # results, jewellery, city rate tables.
 JUNK = re.compile(
     r"(sedar|robinhood|ni 43-101|private placement|drill|intersects?|mineral resource|feasibility study|exploration update|"
-    r"jewel|gold rate in |price today|enforcement action|stock (price|forecast)|\bgold price (january|february|march|april|may|june|july|august|"
+    r"jewel|gold rates? (in|today)|prices? today|\bcarat\b|per (sovereign|gram|tola)|gold chain|snatch|pledg|dowry|smuggl|enforcement action|stock (price|forecast)|\bgold price (january|february|march|april|may|june|july|august|"
     r"september|october|november|december) \d{1,2},? \d{4})", re.I)
 
 

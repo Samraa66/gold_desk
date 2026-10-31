@@ -1,5 +1,5 @@
 [Unit]
-Description=Gold desk v3 move watcher (research only, places no orders)
+Description=Gold desk v3.1 move watcher (research only, places no orders)
 After=network-online.target
 
 [Service]
