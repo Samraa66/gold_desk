@@ -39,7 +39,8 @@ LABELS = {"master": "master (the call)",
           "chart_macro": "chart lean + macro not against (shadow)",
           "chart_setup": "chart's own setup, no master (v2 shadow)",
           "rules_setup": "rules structure setup (v2 shadow)",
-          "rejected_setup": "chart setup the risk check refused (v2 shadow)"}
+          "rejected_setup": "chart setup the risk check refused (v2 shadow)",
+          "post_event_setup": "setup held back by the post-event block (v3.1 shadow, never sent)"}
 
 
 def _fmt_r(x):
@@ -120,12 +121,20 @@ def _scorecard(scored: list[dict]) -> str:
             + "".join(rows) + "</table></div>")
 
 
+def _brief(b: dict) -> str:
+    """Desk v3.1's latest daily brief, as sent to Telegram."""
+    return (f'<h2>Daily brief</h2><div class="card"><div class="sub">{html.escape(str(b.get("at", ""))[:16].replace("T", " "))} UTC · '
+            f'{html.escape(str(b.get("why") or ""))}</div><p class="reason" style="white-space:pre-wrap">{html.escape(b.get("text", ""))}</p></div>')
+
+
 def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | None = None, m1: pd.DataFrame | None = None,
-          instrument: str = "XAU_USD") -> Path:
+          instrument: str = "XAU_USD", brief: dict | None = None, cfg: Config | None = None) -> Path:
+    """`brief` (desk v3.1) adds the latest daily brief at the top; `cfg` scores with that desk's config (default: the
+    instrument's own, as before)."""
     global DP
     spec = I.get(instrument)
     DP = spec.dp
-    cfg = spec.config()
+    cfg = cfg or spec.config()
     m1 = load_m1(instrument=instrument) if m1 is None else m1
     now = now or (m1.index[-1] + pd.Timedelta(minutes=1))
     scored = J.score_entries(J.load(journal_path), m1, cfg, now)
@@ -138,6 +147,8 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
             f"{html.escape(str(m1.index[-1]))[:16]} UTC · research only, no orders are placed</div>"]
     body.append(f'<div class="note">Nothing here is judged until a mode has 30 resolved calls over 6+ weeks (so far: {resolved} resolved calls). '
                 f'A few wins or losses in a row prove nothing. Assumed costs ({cfg.spread_assumed:g} spread + {cfg.slippage_assumed:g} slippage, in price units) are already deducted from every R.</div>')
+    if brief:
+        body.append(_brief(brief))
     body.append("<h2>Scorecard</h2>" + _scorecard(scored))
     for mode in ("llm", "rules"):
         ps = J.summarize_passes([e for e in scored if e["mode"] == mode])
@@ -171,7 +182,9 @@ def build(journal_path: Path = J.JOURNAL, out: Path = OUT, now: pd.Timestamp | N
             ca = pd.Timestamp(sc["closed_at"])
             mins = int((ca - t0).total_seconds() // 60)
             took = f"{mins} min" if mins < 120 else f"{mins / 60:.1f} h"
-            verb = {"win": "Target hit", "loss": "Stopped out", "expired": "Expired after 48h, closed at market",
+            expired = ("Holding time or the Friday close reached, closed at market" if "max_hold_hours" in p
+                       else "Expired after 48h, closed at market")
+            verb = {"win": "Target hit", "loss": "Stopped out", "expired": expired,
                     "unfilled": "Order never filled; cancelled"}[outcome]
             line = f"{verb} at {str(ca)[11:16]} UTC, {took} after the call: {_fmt_r(sc.get('r'))}."
             later = ""

@@ -139,7 +139,7 @@ def v31_desk_wake(trigger, at: pd.Timestamp, oanda=None, bars=None, journal: Pat
     cfg = desk_v31.config()
     scored = J.score_entries(J.load(journal), m1, cfg, m1.index[-1] + pd.Timedelta(minutes=1))
     J.freeze_outcomes(scored, journal)
-    dashboard.build(journal, desk_v31.DASHBOARD, instrument=spec.oanda)
+    dashboard.build(journal, desk_v31.DASHBOARD, instrument=spec.oanda, brief=desk_v31.current_brief(at), cfg=cfg)
     if at.hour == 18 and trigger is None:
         notify.send(desk_v31.day_text(scored, str(at.date()), watcher.load_state(desk_v31.WATCH_STATE).get("wakes", 0)))
     return calls
@@ -177,7 +177,9 @@ def v31_brief(now: pd.Timestamp, oanda=None, journal: Path | None = None, llm=No
 
     b = brief.step(now, llm, facts, events, desk_v31.BRIEF_LOG, send, records_to=journal)
     if b:
+        from . import dashboard
         print(f"brief written ({b['why']})")
+        dashboard.build(journal, desk_v31.DASHBOARD, instrument="XAU_USD", brief=b, cfg=desk_v31.config())
     return b
 
 
@@ -351,7 +353,9 @@ def cmd_dashboard(args):
         print(f"wrote {dashboard.build(args.journal or desk_v3.JOURNAL, desk_v3.DASHBOARD, instrument=spec.oanda)}")
         return
     if args.desk == "v31":
-        print(f"wrote {dashboard.build(args.journal or desk_v31.JOURNAL, desk_v31.DASHBOARD, instrument=spec.oanda)}")
+        out = dashboard.build(args.journal or desk_v31.JOURNAL, desk_v31.DASHBOARD, instrument=spec.oanda, cfg=desk_v31.config(),
+                              brief=desk_v31.current_brief(pd.Timestamp(datetime.now(timezone.utc))))
+        print(f"wrote {out}")
         return
     out = dashboard.build(args.journal or (desk_v2.journal_path(spec) if v2 else spec.journal_path),
                           desk_v2.dashboard_path(spec) if v2 else spec.dashboard_path, instrument=spec.oanda)

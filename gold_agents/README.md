@@ -31,6 +31,7 @@ gold_agents/            package (python -m gold_agents ...)
   macro_data.py         Yahoo (and optional FRED) daily closes, cached in data/macro/
   agents/               chart, macro, liquidity, risk, master
   desk_v2.py desk_v3.py structure.py watcher.py news.py live_data.py   later desks and what they read
+  desk_v31.py moves.py news_v31.py brief.py                           desk v3.1 (2026-10-31), see below
   journal.py            append-only call log + conservative scorer + baselines
   runner.py llm.py notify.py __main__.py
 journal/calls.jsonl     THE forward log (committed, append-only). replay_calls.jsonl is a plumbing artefact, not evidence
@@ -42,7 +43,7 @@ tests/                  offline tests (no network, no key, no MT5)
 ```bash
 cd gold_agents
 /opt/miniconda3/bin/python3.13 -m venv .venv && .venv/bin/pip install -r requirements.txt   # already done on this Mac
-.venv/bin/python -m pytest -q                       # 45 pass
+.venv/bin/python -m pytest -q                       # 233 pass (2026-10-31, desk v3.1 branch)
 .venv/bin/python -m gold_agents run --dry           # make a call, print it, write nothing
 .venv/bin/python -m gold_agents run                 # make a call and log it (rules only unless --llm)
 .venv/bin/python -m gold_agents run --llm           # agents + master use the model (needs ANTHROPIC_API_KEY)
@@ -139,6 +140,97 @@ changed, so no hash moved, but both now also block those releases once it exists
 control have stopped, and with them the slot digest and the v2 scorecard. Their logs and code stay; the Telelytics page keeps showing their last
 state. v2's last gold call (SELL limit 3972, 14:00 slot) was never rescored by a cycle: `--desk v2 score` still works while bars exist. To restart:
 `systemctl enable --now golddesk.timer`. v3's comparison is `rules_setup` in its own log. Only `golddesk-watch.timer` runs now.
+
+## Desk v3.1: legs of one move, stops from the market, woken by gold, other markets or news (2026-10-31)
+Spec: `docs/superpowers/specs/2026-10-31-desk-v3-1-design.md`; plan: `docs/superpowers/plans/2026-10-31-desk-v3-1.md`. Built on
+branch `desk-v3-1`; **not deployed yet**. On 2026-10-30 gold fell $135 in legs. The owner wants a run of shorter trades along a move
+(sell, take profit, wait for confirmation, sell again), 3-4 on a good day and none on a choppy one. That is a hope, not a quota.
+
+`gold_agents/desk_v31.py`, `--desk v31`, **hash `ad50f985`** (`desk_v31.v31_hash`: v1's config hash, `V31`, `WatchV31` and the version),
+log `journal/calls_v31.jsonl` with `outcomes_v31.jsonl`, `prompts_v31.jsonl`, `dashboard_v31.html`, `watch_v31.jsonl`,
+`watch_state_v31.json`, `brief_v31.jsonl`, `news_seen_v31.json`. v1, v2 and v3 keep their code, hashes and logs
+(`tests/test_desk_v31.py::test_older_hashes_do_not_move`). The Stage B clock starts fresh with v3.1.
+
+What changed, and why:
+1. **Limits count the desk's own calls only** (`prior_for`). Bug in v3: `journal.state_at` counted the rules baseline's calls as desk
+   calls (the 19:46 model PASS on 10-30, "3 calls open, limit 2", counted the 19:31 rules call), and the loss limit the same way.
+   `state_at` itself is unchanged, so v1-v3 score and decide as before. Rules calls never count toward the model's limits, nor
+   model calls toward the rules'.
+2. **Legs follow one another** (`side_open`): a new call on a side waits until the previous call on that side has closed. The 1 h
+   same-side clock is gone. Two open model calls at most.
+3. **No dollar figures.** v3 capped stops at $15 and said "quick trades" while the H1 ATR on 10-30 was $18. The floor is 1x the M5
+   ATR; the ceiling is what 0.01 lot can size on the budget (`config()`: `min_stop=0`, `max_stop=inf`). The model sets stop, TP1
+   (at least 1.5R), order validity (up to 12 h) and holding time (`max_hold_hours`) and justifies each. A win exits in full at TP1;
+   TP2 is for information. A missing, zero, negative or non-numeric hold becomes 4 h (`normal_hold`); a huge one is cut by the
+   Friday close.
+4. **Flat by the Friday close.** Every plan carries `flat_by` (`calendar.next_friday_close`), and no order stays valid past it. The
+   scorer reads `max_hold_hours` and `flat_by` from the plan, and when the expiry falls in a market gap it exits at the last close
+   before it, never at Sunday's open (v3's 6 h expiry crossed weekends). Plans without those keys (v1-v3) score as before.
+5. **Move memory and the day read** (`moves.py`). On every wake the chart agent sees where the move started (the last H1 swing
+   against the H1 bias), its size against the D1 ATR, its legs and pullbacks (M15 swings), the desk's own calls on it and what is
+   open. It states the day type (trending, ranging, unclear) and direction first, logged as `day_type` and `day_direction`. On a
+   trending day re-entries after a failed pullback and fresh breaks are the main setups. v3's no-fade, squeeze and post-event
+   sentences stay, and so do the rules in code.
+6. **Hours in New York time** (`calendar.desk_window`): open Sunday 18:00 to Friday 17:00, shut 17:00-18:00 daily, right on both
+   sides of a US clock change. The watcher no longer sleeps in Asia hours or from 20:00 UTC; it saw neither Friday's last hour nor
+   Sunday's reopen before. `liquidity.run` takes the same window. `calendar.market_window` is unchanged for v1-v3.
+7. **More reasons to look** (`watcher.WatchV31`, a copy of `Watch` plus three numbers): gold's four triggers, `cross_move` (a 5-minute bar
+   in USD/JPY, EUR/USD, the 10-year bond, the S&P, Brent or silver 3x that market's own normal bar), `gap` (the first bar after a
+   weekend or the daily break reads as a gap, never as a break, and the 3 h range starts again after it) and `news`. The new kinds
+   carry no direction. A rules-only news poll runs every minute (`news-poll`, `scripts/news_cycle.sh`, `golddesk-news.timer`), so a quiet
+   poll costs nothing. One daily budget of 30 wakes covers every trigger. A headline within 15 min of any wake does not wake the
+   desk again, and both scripts take `journal/.bars.lock`.
+8. **Inputs, each with its age or "unavailable"** (`call["inputs"]`). News: a relevance filter in rules drops price pages, broker
+   pages and mining filings; the Federal Reserve and Treasury press feeds join Google News. Titles only: article text is not
+   fetched. Headline lag is measured on every wake. Calendar: `events_v31.csv` adds US medium-impact releases and other central
+   banks, marked by impact. Only `high` blocks, and v1-v3 still read `events.csv` alone. Real yield: FRED `DFII10` from the public
+   graph csv, no key. COT: CFTC public reporting, weekly. **ETF holdings: unavailable.** No free source whose terms clearly allow
+   automated reading was confirmed, so none is scraped.
+9. **Daily brief** (`brief.py`): written by the quick model before London (the 02:00 New York slot, weekdays) and at the first slot
+   within 2 h after any listed release. It covers drivers, the trend read, levels and scheduled risks, and ends with the desk's
+   open call or `Desk: PASS`. Any entry, stop or target in the model's reply is stripped: trades come only from a passed desk call.
+   It goes to Telegram, `brief_v31.jsonl` and the dashboard. The master, news and macro agents read it; the chart agent never does.
+   No key: no brief.
+10. **Shadows**: `rules_setup` (the baseline the model must beat: trade a directional trigger at market unless H1 opposes it, stop
+    1.5x M5 ATR with no dollar cap, TP1 1.5R, 4 h hold), `chart_setup`, `rejected_setup`, and new `post_event_setup`: what the desk
+    would have called inside the 3 h post-event block, with only that rule off. It is scored and never sent, so forward results can
+    show whether a later version should shorten the block.
+
+**Sizing (the owner's decision, 2026-10-31):** a $5,000 research demo at 1.5% risk, $75 a trade, because 0.01 lot is 1 oz and a
+$1,000 demo would make $15 the widest possible stop. Daily loss limit 3R, master bar 0.50, costs v1's conservative 0.60 + 0.30.
+Results are scored in R. Every card shows the stop distance and `At 0.01 lot: risk $<distance>`, so the owner can size a real
+trade against their own account or skip it; the desk stores no balance.
+
+**The client positions reading (spec item 7): cause not found yet.** OANDA's position book read 70.9% long on all six v3 runs on
+10-30 while its timestamp moved, and the desk used it as "fuel below". `parse_positions` sums every bucket's long and short
+percentages, which looks right on paper. Finding the cause needs raw `positionBook` payloads from the VPS at two or more
+timestamps, which this build could not reach (plan Task 8 Step 1, left for a local run). Until then the number is **left out of
+every v3.1 prompt** (chart, master, macro, news). It stays on the call as `positions_raw` with the reason, so the cause can be found.
+
+**Known risks, stated before the first result.**
+- Legs of one move are correlated: five calls on one day are closer to one bet than five (see the power note).
+- Wider stops sized at 0.01 lot carry more dollar risk per trade on a real account than v3's: the card says how much.
+- The news trigger can fire on stale or repeated stories. Headlines older than 30 min never trigger, and each fires once.
+- A cross-market spike is a reason to look, never a side; it can spend wakes on days gold does not care.
+- The free sources' URLs and field names (Fed and Treasury feeds, FRED csv, CFTC) were written without network access from the
+  build machine. A wrong one shows as "unavailable" on every call, never as a guess, but check them on the VPS before go-live.
+- Brief cost: one quick-model call per brief, up to a few a day on busy calendars.
+- `scripts/rules_reentry_check.py` (the plain-rules re-entry check on 2022-12 to 2026-08 bars, frozen `V31` numbers, one run) was written and
+  smoke-tested on synthetic bars only. It needs the gold bars, which the build machine did not have. Its output is a sanity
+  check, never evidence, and no number changes because of it.
+
+**Before go-live (plan Task 11, not done on the branch).**
+- `scripts/deploy_vps.sh`: add `--exclude events_v31.csv` to the code rsync. It runs with `--delete` and excludes only `events.csv`, so
+  as it stands every deploy would delete or overwrite the server's wider calendar. Also install and enable `golddesk-news.timer`.
+  Note that a deploy copies `scripts/systemd/` and the new `watch_cycle.sh`, so the watcher moves to v3.1 on the first deploy.
+- `scripts/pull_dashboard.sh`: add `journal/brief_v31.jsonl` and the v3.1 dashboard. `golddesk-watch.service`: its description still says v3.
+- On the VPS: root-cause the positions reading from raw `positionBook` payloads; confirm the Fed, Treasury, FRED and CFTC sources
+  answer (or record them as unavailable); run `scripts/rules_reentry_check.py` once; run `--desk v31 run --dry --llm` and read the
+  saved prompts end to end against the spec's inputs list.
+- Read the Telelytics `gold_desk_routes.py` file listing for the v3.1 names (read only; report gaps to the owner).
+
+Commands (from `gold_agents/`): `.venv/bin/python -m gold_agents --desk v31 run --dry --llm` (one call, written nowhere),
+`--desk v31 score`, `--desk v31 dashboard`, `--desk v31 watch` (one tick), `--desk v31 news-poll` (one poll).
 
 ## Keeping everything (2026-10-29)
 The owner asked that every slot, PASS included, leave enough behind to judge it later and improve the model. Recording

@@ -13,6 +13,8 @@ KNOWN_HASHES = {
     "v2": {"XAU_USD": "80b98c11", "XAG_USD": "df6c1617", "EUR_USD": "969c1a3d", "GBP_USD": "f827a7ce"},
     "v3": "2bbfa4f5",
 }
+# v3.1's own hash, frozen before go-live (V31, WatchV31, config() and VERSION). A change starts a new record and a new log.
+V31_HASH = "ad50f985"
 
 
 # ---------------- identity ----------------
@@ -593,3 +595,93 @@ def test_every_input_shows_age_or_unavailable(history, tmp_path, monkeypatch):
         assert v == "unavailable" or v == "present" or (isinstance(v, dict) and v), key
     assert rec["positions"] == {"age_min": 21.0, "in_prompts": False} and rec["cross"]["BCO_USD"] == "unavailable"
     assert rec["macro_daily"] == "unavailable" and rec["gold_bars"]["age_min"] >= 0
+
+
+# ---------------- Task 10: shadow record, dashboard, identity ----------------
+def test_post_event_setup_scored_never_sent(history, tmp_path):
+    from gold_agents.__main__ import v31_wake
+    t = asof(history)
+    cpi = {"time": (t - pd.Timedelta(hours=1)).to_pydatetime(), "name": "US CPI", "impact": "high"}
+    call = decide31(history, t, fake31(history, t), events=[cpi])
+    held = call["baselines"]["post_event_setup"]
+    assert call["decision"] == "PASS" and held["direction"] == "SELL" and "after US CPI" in held["blocked_because"]
+    assert held["plan"]["flat_by"] and held["plan"]["max_hold_hours"] == 3.0
+    scored = J.score_entries([call], history, D31.config(), t + pd.Timedelta(hours=6))[0]["scores"]
+    assert scored["post_event_setup"]["outcome"] in ("win", "loss", "expired")
+    sent = []
+    import gold_agents.desk_v31 as mod
+    orig = mod.default_events
+    mod.default_events = lambda as_of: [cpi]
+    try:
+        v31_wake(None, t, fake31(history, t), history, None, LIVE, tmp_path / "c.jsonl", sent.append, clock=lambda: t,
+                 v31=D31.V31(counter_run=99))
+    finally:
+        mod.default_events = orig
+    assert sent == [] and all(c["decision"] == "PASS" for c in J.load(tmp_path / "c.jsonl"))
+    # outside the block there is no such record
+    assert "post_event_setup" not in decide31(history, t, fake31(history, t))["baselines"]
+
+
+def test_rules_baseline_scales_like_v3(history):
+    ctx31 = ctx_at(history, asof(history))
+    ctx3 = build_context(history, asof(history), V3.config(), None, [], {})
+    st = {"h1_pattern": {"bias": 0}}
+    for atr_m5 in (4.0, 6.0, 9.0):                                       # inside v3's $5-15: the same stop as v3
+        s31 = V3.rules_setup(ctx31, st, sell_trigger(), D31._v3(D31.V31()), atr_m5)
+        s3 = V3.rules_setup(ctx3, st, sell_trigger(), V3.V3(), atr_m5)
+        assert s31["stop"] - ctx31.price == pytest.approx(1.5 * atr_m5) == pytest.approx(s3["stop"] - ctx3.price)
+        assert (ctx31.price - s31["tp1"]) == pytest.approx(1.5 * (s31["stop"] - ctx31.price))
+    wide = V3.rules_setup(ctx31, st, sell_trigger(), D31._v3(D31.V31()), 20.0)
+    assert wide["stop"] - ctx31.price == pytest.approx(30.0)            # no dollar cap in v3.1; the 0.01-lot ceiling sizes it
+    plan, _ = D31.check(ctx31, wide, D31.V31(counter_run=99), {}, 20.0)
+    assert plan["lots"] == 0.02 and plan["risk_usd"] == pytest.approx(60.0)        # $75 budget: 2 x 0.01 lot on a $30 stop
+    assert plan["max_hold_hours"] == D31.V31().default_hold_hours
+
+
+def test_dashboard_shows_brief_and_keeps_paths(history, tmp_path):
+    from gold_agents import dashboard
+    from gold_agents.__main__ import v31_wake
+    t = asof(history)
+    journal = tmp_path / "calls_v31.jsonl"
+    v31_wake(sell_trigger(), t, fake31(history, t), history, None, LIVE, journal, lambda x: None, clock=lambda: t,
+             v31=D31.V31(counter_run=99))
+    b = {"at": "2026-10-14T06:01:00+00:00", "why": "london", "text": "Gold brief\nDesk: PASS <script>"}
+    out = dashboard.build(journal, tmp_path / "dashboard_v31.html", now=t + pd.Timedelta(hours=8), m1=history, brief=b, cfg=D31.config())
+    page = out.read_text()
+    assert "Daily brief" in page and "Desk: PASS &lt;script&gt;" in page and "<script>" not in page
+    assert "Daily brief" not in dashboard.build(journal, tmp_path / "plain.html", now=t, m1=history).read_text()
+    # the Telelytics page reads journal/ dashboards and calls*.jsonl: the names stay in that folder and that pattern
+    for path in (D31.JOURNAL, D31.DASHBOARD):
+        assert path.parent == I.get("XAU_USD").journal_path.parent
+    assert D31.JOURNAL.name.startswith("calls") and D31.DASHBOARD.name.startswith("dashboard")
+    for side in (D31.OUTCOMES, D31.PROMPTS, D31.WATCH_LOG, D31.WATCH_STATE, D31.BRIEF_LOG):
+        assert not side.name.startswith("calls"), side
+
+
+def test_v31_hash_is_frozen():
+    assert D31.v31_hash(D31.config()) == V31_HASH
+
+
+def test_older_hashes_still_do_not_move():
+    test_older_hashes_do_not_move()
+
+
+def test_rules_reentry_check_plumbing():
+    """The script's loop on synthetic bars: it runs, trades only in desk hours, never stacks a side. Its numbers mean nothing."""
+    import importlib.util
+    from pathlib import Path as _P
+    spec = importlib.util.spec_from_file_location("rrc", _P(__file__).resolve().parent.parent / "scripts" / "rules_reentry_check.py")
+    rrc = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rrc)
+    bars = make_m1(start="2026-06-01", days=60, seed=11, drift=0.01, vol=0.3)
+    trades, skipped = rrc.run(bars, pd.Timestamp("2026-07-01", tz="UTC"), pd.Timestamp("2026-07-24", tz="UTC"))
+    assert trades, skipped
+    for x in trades:
+        assert cal.desk_window(pd.Timestamp(x["as_of"]).to_pydatetime())[0] in ("open", "thin")
+        assert x["plan"]["max_hold_hours"] == D31.V31().default_hold_hours and x["legs"] >= 2
+    for side in ("BUY", "SELL"):
+        mine = [x for x in trades if x["direction"] == side]
+        for a, b in zip(mine, mine[1:]):
+            assert a["score"].get("closed_at") is None or pd.Timestamp(a["score"]["closed_at"]) <= pd.Timestamp(b["as_of"])
+    s = rrc.summary(trades)
+    assert s["trades"] == len(trades) and s["resolved"] <= s["trades"]

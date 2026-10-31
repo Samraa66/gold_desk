@@ -421,6 +421,12 @@ def decide_at(m1_all: pd.DataFrame, as_of, cfg: Config, *, llm=None, macro_df=No
         raw = loose_check(ctx, chart.facts["setup"], v31, st)
         if raw:
             baselines["rejected_setup"] = {"direction": raw["direction"], "plan": raw, "rejected_because": why_not}
+        if why_not.startswith(f"within {v31.post_event_hours:g}h after "):     # desk_v2.setup_filters' post-event refusal
+            # What the desk would have called inside the post-event block: the same setup with only that rule off. Scored, never
+            # sent, so forward results can show whether a later version should shorten the block.
+            held, _ = check(ctx, chart.facts["setup"], replace(v31, post_event_hours=0.0), st, atr_m5)
+            if held:
+                baselines["post_event_setup"] = {"direction": held["direction"], "plan": held, "blocked_because": why_not}
     h = v31_hash(cfg, v31)
     return {"id": f"{as_of.isoformat()}|{mode}|{h}", "as_of": as_of.isoformat(), "desk": "v31", "mode": mode, "rules_hash": h,
             "decided_by": source, "decision": decision, "reason": reason, "price": round(ctx.price, I.of(cfg).dp),
