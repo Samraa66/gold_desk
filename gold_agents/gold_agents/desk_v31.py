@@ -165,8 +165,8 @@ def loose_check(ctx: Context, setup: dict, v31: V31, st: dict | None) -> dict | 
 
 
 # ---------------------------------------------------------------- inputs: each with its age, or "unavailable"
-POSITIONS_NOTE = ("omitted from every v3.1 prompt: OANDA's client positions read 70.9% long on all six runs on 2026-10-30 while "
-                  "the timestamp moved, and the cause has not been found yet (README, desk v3.1). Logged here so it can be.")
+POSITIONS_NOTE = ("omitted from every v3.1 prompt: the 70.9% long of 2026-10-30 was no bug but the whole book, most of it far from price, "
+                  "which does not move with the market (README, desk v3.1). `near_price` is logged, unjudged, for a later version.")
 
 
 def _age_min(now: pd.Timestamp, t) -> float | None:
@@ -191,8 +191,10 @@ def live_inputs(now: pd.Timestamp, oanda=None, bars: pd.DataFrame | None = None,
         price = float(b["close"].iloc[-1])
         book = D.parse_book(oanda._json(f"{D.GOLD}/orderBook"), price, 60.0)
         out["book"] = {**book, "age_min": _age_min(now, book.get("time"))}
-        pos = D.parse_positions(oanda._json(f"{D.GOLD}/positionBook"))
-        out["positions"] = {**pos, "age_min": _age_min(now, pos.get("time")), "note": POSITIONS_NOTE}
+        payload = oanda._json(f"{D.GOLD}/positionBook")
+        pos = D.parse_positions(payload)
+        out["positions"] = {**pos, "near_price": D.parse_positions_near(payload, price, 60.0), "age_min": _age_min(now, pos.get("time")),
+                            "note": POSITIONS_NOTE}
     except Exception as e:
         print(f"gold book unavailable: {e}")
     for inst, meaning in D.CROSS.items():
@@ -322,7 +324,7 @@ def _pick(value, allowed: tuple) -> str:
 
 def chart_run(ctx: Context, v31: V31, m5: pd.DataFrame, trigger: dict | None, live: dict, move: dict, llm=None) -> Report:
     st, candles = V3.chart_facts(ctx, _v3(v31), m5, live)
-    st.pop("positions", None)                                     # see POSITIONS_NOTE: not trusted until its cause is found
+    st.pop("positions", None)                                     # see POSITIONS_NOTE: the whole book carries no signal
     setup = V3.rules_setup(ctx, st, trigger, _v3(v31), st["atr"]["m5"])
     live_setup = setup["entry_type"] != "none"
     rep = Report("chart", score=float(st["h1_pattern"]["bias"]) if live_setup else 0.0, confidence=0.5 if live_setup else 0.0,

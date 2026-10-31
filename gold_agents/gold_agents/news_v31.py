@@ -83,9 +83,10 @@ def poll(now: pd.Timestamp, session=requests, seen_path: Path | None = None, max
 
 # Google News (as v3) plus primary sources: the Federal Reserve's and the Treasury's own press feeds, which carry a decision or
 # a statement before any article about it. Titles only: article text is not fetched (no free source whose terms clearly allow it
-# was confirmed). The two primary URLs were written without network access from the build machine; check them on the VPS.
+# was confirmed). Checked live on 2026-10-31. Treasury publishes no press-release feed (its rss.xml is old site pages), so that
+# entry is Google's index of the press-release pages: the Treasury's own words, but later than the Fed's own feed by the index delay.
 PRIMARY = {"Federal Reserve": "https://www.federalreserve.gov/feeds/press_all.xml",
-           "US Treasury": "https://home.treasury.gov/news/press-releases/feed"}
+           "US Treasury": "https://news.google.com/rss/search?q=site:home.treasury.gov/news/press-releases&hl=en-US&gl=US&ceid=US:en"}
 
 
 def sources(now: pd.Timestamp, session=requests, hours: float = 12.0) -> list[dict]:
@@ -97,7 +98,7 @@ def sources(now: pd.Timestamp, session=requests, hours: float = 12.0) -> list[di
         try:
             r = session.get(url, headers=news.HEADERS, timeout=15)
             if r.ok:
-                got = news.parse_rss(r.text, now, hours=hours, limit=50)
+                got = news.parse_rss(r.content.decode("utf-8-sig", "replace"), now, hours=hours, limit=50)   # the Fed sends a BOM and no charset
                 rows.extend({**h, "source": h["source"] or name, "primary": name is not None} for h in got)
         except requests.RequestException:
             continue
@@ -124,8 +125,8 @@ def headline_lag(heads: list[dict]) -> dict | str:
 
 # ---------------------------------------------------------------- calendar (wider than v1-v3's)
 EVENTS_V31 = cal.EVENTS_V31_FILE
-CENTRAL_BANK = re.compile(r"(rate|monetary policy|policy statement|press conference|minutes|bank|governor|lagarde|ueda|bailey|"
-                          r"outlook report|mpc|fomc)", re.I)
+CENTRAL_BANK = re.compile(r"(policy rate|cash rate|overnight rate|refinancing rate|deposit rate|bank rate|rate statement|monetary policy|"
+                          r"policy statement|press conference|minutes|\bgov\b|governor|lagarde|ueda|bailey|outlook report|mpc|fomc)", re.I)
 
 
 def calendar_rows(rows: list[dict]) -> list[dict]:

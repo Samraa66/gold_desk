@@ -496,7 +496,7 @@ def call_of(llm, agent):
     return next(c for c in llm.calls if c["agent"] == agent)
 
 
-def test_positions_omitted_until_cause_found(history):
+def test_positions_stay_out_of_every_prompt(history):
     """The 70.9% reading is not trusted until its cause is found on the VPS: it reaches no prompt, and stays on the call."""
     t = asof(history)
     llm = fake31(history, t)
@@ -685,3 +685,30 @@ def test_rules_reentry_check_plumbing():
             assert a["score"].get("closed_at") is None or pd.Timestamp(a["score"]["closed_at"]) <= pd.Timestamp(b["as_of"])
     s = rrc.summary(trades)
     assert s["trades"] == len(trades) and s["resolved"] <= s["trades"]
+
+
+# ---------------- the 70.9% reading (root-caused on 2026-10-31 from raw positionBook payloads) ----------------
+def test_positions_cause():
+    """Not a bug: the whole book sums correctly, it is just thousands of old positions, most far from price, so it barely moves.
+    A slice around price does move. Shape of 2026-10-30 14:00 UTC: whole book about 71% long, near price 41%."""
+    from gold_agents import live_data as L
+    buckets = [{"price": "1500", "longCountPercent": "45", "shortCountPercent": "5"},    # old longs, far from any price that matters
+               {"price": "4100", "longCountPercent": "20", "shortCountPercent": "20"},   # trapped above
+               {"price": "3910", "longCountPercent": "3", "shortCountPercent": "4"},
+               {"price": "3930", "longCountPercent": "1", "shortCountPercent": "2"}]
+    book = {"positionBook": {"time": "t", "price": "3920", "buckets": buckets}}
+    assert L.parse_positions(book)["long_pct"] == 69.0                                  # the sum is right, and says little
+    near = L.parse_positions_near(book, 3920.0, 60.0)
+    assert near == {"time": "t", "long_pct": 40.0, "short_pct": 60.0, "share_of_book_pct": 10.0, "width": 60.0}
+    assert L.parse_positions_near({"positionBook": {"buckets": []}}, 3920.0, 60.0)["long_pct"] is None
+
+
+def test_near_price_positions_are_logged_and_reach_no_prompt(history):
+    t = pd.Timestamp("2026-10-14T15:21:00Z")
+    live = D31.live_inputs(t, FakeOanda(), session=DeadWeb())
+    assert live["positions"]["near_price"]["long_pct"] is not None
+    assert "does not move" in live["positions"]["note"]
+    llm = fake31(history, asof(history))
+    call = decide31(history, asof(history), llm, live={**LIVE, "positions": live["positions"]})
+    assert call["positions_raw"]["near_price"] == live["positions"]["near_price"]
+    assert not any("near_price" in c["user"] for c in llm.calls)

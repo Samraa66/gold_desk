@@ -82,8 +82,7 @@ def macro_frame(as_of: datetime, **kw) -> pd.DataFrame:
 
 # ---------------------------------------------------------------- desk v3.1: free inputs with their age (2026-10-31)
 # Each returns a dict that carries the data's age, or the string "unavailable": a dead source is never filled in. Cached under
-# data/macro/ so 30+ wakes a day make a few requests, not dozens. URLs and field names were written without network access
-# from the build machine: verify them on the VPS before trusting the "unavailable" rate (README, desk v3.1).
+# data/macro/ so 30+ wakes a day make a few requests, not dozens. URLs and field names checked live on 2026-10-31.
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv"          # public, no key: the series' graph download
 CFTC_LEGACY = "https://publicreporting.cftc.gov/resource/6dca-aqww.json"   # CFTC public reporting, legacy futures-only COT
 COT_MARKET = "GOLD - COMMODITY EXCHANGE INC."

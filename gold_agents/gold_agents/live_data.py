@@ -58,6 +58,20 @@ def parse_positions(payload: dict) -> dict:
             "short_pct": round(sht / total * 100, 1) if total else None}
 
 
+def parse_positions_near(payload: dict, price: float, width: float) -> dict:
+    """Long/short among positions within `width` of price, and that slice's share of the whole book. `parse_positions` reads the
+    whole book, thousands of buckets of mostly old positions, which hardly moves (README, desk v3.1)."""
+    book = payload.get("positionBook", {})
+    rows = book.get("buckets", [])
+    near = [x for x in rows if abs(float(x["price"]) - price) <= width]
+    lng, sht = sum(float(x["longCountPercent"]) for x in near), sum(float(x["shortCountPercent"]) for x in near)
+    total = lng + sht
+    whole = sum(float(x["longCountPercent"]) + float(x["shortCountPercent"]) for x in rows)
+    return {"time": book.get("time"), "long_pct": round(lng / total * 100, 1) if total else None,
+            "short_pct": round(sht / total * 100, 1) if total else None,
+            "share_of_book_pct": round(total / whole * 100, 1) if whole else None, "width": width}
+
+
 class Oanda:
     def __init__(self, session=requests):
         self.session = session

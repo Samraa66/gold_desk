@@ -37,7 +37,7 @@ def test_fresh_ignores_seen_and_old():
 def test_poll_marks_seen_once(tmp_path):
     class Session:
         def get(self, url, **kw):
-            return type("R", (), {"ok": True, "text": RSS})()
+            return type("R", (), {"ok": True, "text": RSS, "content": RSS.encode()})()
     seen = tmp_path / "seen.json"
     first = N.poll(T, Session(), seen)
     assert [h["title"] for h in first] == ["Gold falls to one-year low - Reuters"]
@@ -174,7 +174,7 @@ def test_sources_add_primary_feeds_and_keep_one_per_story():
     class Session:
         def get(self, url, **kw):
             text = fed if "federalreserve" in url else RSS
-            return type("R", (), {"ok": True, "text": text})()
+            return type("R", (), {"ok": True, "text": text, "content": text.encode()})()
 
     heads = N.sources(T, Session())
     first = heads[0]
@@ -212,3 +212,29 @@ def test_real_yield_and_cot_carry_their_age(tmp_path):
     assert ry["value_pct"] == 2.10 and ry["date"] == "2026-10-30" and ry["age_days"] == 4.6 and ry["change_5d_pp"] == 0.05
     c = M.cot_gold(T, Session(), cache_dir=tmp_path)
     assert c["noncommercial_net"] == 190000 and c["net_change_week"] == -15000 and c["report_date"] == "2026-10-27" and c["age_days"] > 7
+
+
+# ---------------- found on live feeds, 2026-10-31 ----------------
+def test_a_feed_with_a_bom_and_a_wrong_charset_still_parses():
+    """The Fed's feed is UTF-8 with a BOM and no declared charset: requests guesses ISO-8859-1 and its .text fails the XML parse."""
+    raw = ('﻿<?xml version="1.0" encoding="utf-8" ?><rss version="2.0"><channel><item>'
+           '<title>Federal Reserve issues FOMC statement</title><pubDate>Tue, 03 Nov 2026 14:29:00 GMT</pubDate></item>'
+           '</channel></rss>').encode("utf-8")
+
+    class Session:
+        def get(self, url, **kw):
+            body = raw if "federalreserve" in url else b"<rss></rss>"
+            return type("R", (), {"ok": True, "content": body, "text": body.decode("iso-8859-1")})()
+
+    assert [h["source"] for h in N.sources(T, Session())] == ["Federal Reserve"]
+
+
+def test_non_us_rows_are_central_banks_only():
+    rows = [{"title": t, "country": c, "date": "2026-11-12T08:30:00-05:00", "impact": "High"} for c, t in (
+        ("AUD", "Unemployment Rate"), ("CAD", "Unemployment Rate"), ("GBP", "CPI y/y"), ("EUR", "Inflation Rate y/y"),
+        ("NZD", "Official Cash Rate"), ("CAD", "Overnight Rate"), ("EUR", "Main Refinancing Rate"), ("JPY", "BOJ Policy Rate"),
+        ("GBP", "Official Bank Rate"), ("CHF", "SNB Policy Rate"), ("EUR", "ECB Press Conference"), ("GBP", "MPC Official Bank Rate Votes"),
+        ("JPY", "Monetary Policy Meeting Minutes"), ("JPY", "BOJ Gov Ueda Speaks"), ("AUD", "RBA Rate Statement"))]
+    kept = [r["name"] for r in N.calendar_rows(rows)]
+    assert not any("Unemployment" in k or "CPI" in k or "Inflation" in k for k in kept)
+    assert len(kept) == 11

@@ -201,19 +201,24 @@ $1,000 demo would make $15 the widest possible stop. Daily loss limit 3R, master
 Results are scored in R. Every card shows the stop distance and `At 0.01 lot: risk $<distance>`, so the owner can size a real
 trade against their own account or skip it; the desk stores no balance.
 
-**The client positions reading (spec item 7): cause not found yet.** OANDA's position book read 70.9% long on all six v3 runs on
-10-30 while its timestamp moved, and the desk used it as "fuel below". `parse_positions` sums every bucket's long and short
-percentages, which looks right on paper. Finding the cause needs raw `positionBook` payloads from the VPS at two or more
-timestamps, which this build could not reach (plan Task 8 Step 1, left for a local run). Until then the number is **left out of
-every v3.1 prompt** (chart, master, macro, news). It stays on the call as `positions_raw` with the reason, so the cause can be found.
+**The client positions reading (spec item 7): cause found 2026-10-31, not a bug.** OANDA's position book read 70.9% long on all
+six v3 runs on 10-30 while its timestamp moved, and the desk used it as "fuel below". The sum is correct and the data was not frozen:
+the number is the whole book, about 4,200 buckets reaching down to $1,053. Only 6.5-10% of it sat within $60 of price and 10-14% of it
+was longs more than $60 above price. Over 23 raw snapshots from 10-15 to 10-30, with gold between 3920 and 4185, the whole-book
+reading stayed at 71.0-72.6 (sd 0.48) while the slice within $60 ranged 41.4-63.8 (sd 5.09); on 10-30 itself the slice fell from
+50.6 to 41.4 as the whole book held 70.7-71.1. So 70.9% is a real stock of old positions, carries almost no information and was
+never evidence of fuel below. It stays **out of every v3.1 prompt** (chart, master, macro, news). `positions_raw` on each call keeps
+it and adds `near_price` (`live_data.parse_positions_near`, $60 either side). That slice is logged only: no agent sees it until a
+later version has judged it, because an unjudged input is how the 70.9% got in.
 
 **Known risks, stated before the first result.**
 - Legs of one move are correlated: five calls on one day are closer to one bet than five (see the power note).
 - Wider stops sized at 0.01 lot carry more dollar risk per trade on a real account than v3's: the card says how much.
 - The news trigger can fire on stale or repeated stories. Headlines older than 30 min never trigger, and each fires once.
 - A cross-market spike is a reason to look, never a side; it can spend wakes on days gold does not care.
-- The free sources' URLs and field names (Fed and Treasury feeds, FRED csv, CFTC) were written without network access from the
-  build machine. A wrong one shows as "unavailable" on every call, never as a guess, but check them on the VPS before go-live.
+- The free sources were checked live from the Mac on 2026-10-31. Google News, FRED and CFTC worked as written. Two did not and were
+  fixed: the Fed feed (a BOM plus a wrong guessed charset failed the XML parse) and the Treasury URL (404; Treasury has no press-release feed, so this is Google's index of its press-release pages, which lags). The calendar
+  filter was narrowed so a non-US `Unemployment Rate` cannot pass as a central bank. A source that later breaks shows as "unavailable".
 - Brief cost: one quick-model call per brief, up to a few a day on busy calendars.
 - `scripts/rules_reentry_check.py` (the plain-rules re-entry check on 2022-12 to 2026-08 bars, frozen `V31` numbers, one run) was written and
   smoke-tested on synthetic bars only. It needs the gold bars, which the build machine did not have. Its output is a sanity
