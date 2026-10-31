@@ -14,7 +14,7 @@ from . import llm as L
 from . import macro_data, notify
 from .config import Config
 from .data import load_m1
-from . import desk_v2, desk_v3
+from . import desk_v2, desk_v3, desk_v31
 from .runner import card, decide_at, watch_text
 
 
@@ -53,6 +53,8 @@ def _setup(args):
     spec = I.get(args.instrument)
     if args.desk == "v3":
         return spec, desk_v3.config(), args.journal or desk_v3.JOURNAL, load_m1(instrument=spec.oanda)
+    if args.desk == "v31":
+        return spec, desk_v31.config(), args.journal or desk_v31.JOURNAL, load_m1(instrument=spec.oanda)
     journal = args.journal or (desk_v2.journal_path(spec) if args.desk == "v2" else spec.journal_path)
     return spec, spec.config(), journal, load_m1(instrument=spec.oanda)
 
@@ -84,8 +86,113 @@ def v3_wake(trigger, as_of: pd.Timestamp, llm, m1, macro_df, live: dict, journal
     return calls
 
 
+def v31_live(now: pd.Timestamp, oanda=None, bars=None) -> dict:
+    """What v3.1 reads besides its own candles, fetched once and stored on the call. A dead source comes back empty."""
+    return v3_live(now, oanda, bars)
+
+
+def v31_wake(trigger, as_of: pd.Timestamp, llm, m1, macro_df, live: dict, journal: Path, send=notify.send, clock=None,
+             v31: desk_v31.V31 = desk_v31.V31_DEFAULT, brief: dict | None = None) -> list[dict]:
+    """One v3.1 wake: the model's call and the rules call on the same time, both filled from the first full minute after the
+    model finished. Each mode's limits count only its own calls (`desk_v31.prior_for`)."""
+    clock = clock or (lambda: pd.Timestamp(datetime.now(timezone.utc)))
+    cfg, prior = desk_v31.config(), J.load(journal)
+    calls = []
+    for model in ((llm, None) if llm is not None else (None,)):
+        call = desk_v31.decide_at(m1, as_of, cfg, llm=model, macro_df=macro_df, prior_entries=prior, v31=v31, trigger=trigger,
+                                  live=live, brief=brief)
+        if not calls:
+            fill_from = str(clock().ceil("min"))
+        call["fill_from"] = fill_from
+        keep_model_io(call, model, journal, wrote=False)
+        wrote = J.append(call, journal)
+        keep_model_io(call, model, journal, wrote)
+        if should_notify(call, wrote and model is not None, True):
+            send(desk_v31.card(call))
+        calls.append(call)
+    return calls
+
+
+def v31_desk_wake(trigger, at: pd.Timestamp, oanda=None, bars=None, journal: Path | None = None) -> list[dict]:
+    """The one wake behind `--desk v31 watch` and `news-poll`: refresh bars, read the live inputs, decide, score, rebuild the
+    dashboard. Callers hold journal/.bars.lock (the shell scripts), so a tick and a news poll never run it at once."""
+    from . import dashboard, live_data, news, oanda_data, watcher
+    spec = I.get("XAU_USD")
+    journal = journal or desk_v31.JOURNAL
+    oanda = oanda or live_data.Oanda()
+    print(oanda_data.refresh(at - pd.Timedelta(days=3), spec.bars_path, instrument=spec.oanda))
+    if trigger is None:               # a slot: the calendar changes slowly and 4 reads a day is plenty
+        try:
+            print("calendar: new events", news.refresh_calendar())
+        except Exception as e:
+            print(f"calendar refresh failed: {e}")
+    m1 = load_m1(instrument=spec.oanda)
+    live = v31_live(at, oanda, bars)
+    macro_df = macro_data.macro_frame(at.to_pydatetime())
+    client = L.from_env()
+    if client is None:
+        print("no ANTHROPIC_API_KEY: rules only")
+    calls = v31_wake(trigger, at, client, m1, macro_df, live, journal)
+    print(*[f"{c['mode']}: {c['decision']} ({c['reason'][:120]})" for c in calls], sep="\n")
+    cfg = desk_v31.config()
+    scored = J.score_entries(J.load(journal), m1, cfg, m1.index[-1] + pd.Timedelta(minutes=1))
+    J.freeze_outcomes(scored, journal)
+    dashboard.build(journal, desk_v31.DASHBOARD, instrument=spec.oanda)
+    if at.hour == 18 and trigger is None:
+        notify.send(desk_v31.day_text(scored, str(at.date()), watcher.load_state(desk_v31.WATCH_STATE).get("wakes", 0)))
+    return calls
+
+
+def cross_bars(oanda) -> dict:
+    """Each other market's last 60 M5 bars for `watcher.cross_triggers`; a market that fails comes back as None."""
+    from . import live_data
+    out = {}
+    for inst in live_data.CROSS:
+        try:
+            out[inst] = oanda.m5(inst, 60)
+        except Exception as e:              # a dead market is skipped, never guessed
+            print(f"{inst} unavailable: {e}")
+            out[inst] = None
+    return out
+
+
+def cmd_watch_v31(args):
+    """One 5-minute look at gold and the other markets, Sunday's reopen to Friday's close in New York time."""
+    from . import calendar as cal
+    from . import live_data, watcher
+    now = pd.Timestamp(datetime.now(timezone.utc)).floor("min")
+    oanda = live_data.Oanda()
+    seen = {}
+
+    def fetch():
+        seen["bars"] = oanda.m5()
+        return seen["bars"]
+
+    def extra():
+        return watcher.cross_triggers(cross_bars(oanda), watcher.WATCH_V31, now)
+
+    def wake(trigger, at):
+        v31_desk_wake(trigger, at, oanda, seen.get("bars"), args.journal)
+
+    print(now, watcher.tick(now, fetch, wake, desk_v31.WATCH_STATE, desk_v31.WATCH_LOG, watcher.WATCH_V31, window=cal.desk_window,
+                            thin_sleeps=False, extra=extra))
+
+
+def cmd_news_poll(args):
+    """One news poll (every minute, rules only). A quiet poll calls no model; a fresh relevant headline wakes the v3.1 desk
+    through the same helper, budget and state as the 5-minute tick."""
+    from . import news_v31
+    now = pd.Timestamp(datetime.now(timezone.utc)).floor("min")
+    seen_path = desk_v31.JOURNAL.with_name("news_seen_v31.json")
+    out = news_v31.tick(now, lambda: news_v31.poll(now, seen_path=seen_path), lambda trig, at: v31_desk_wake(trig, at, journal=args.journal),
+                        desk_v31.WATCH_STATE, desk_v31.WATCH_LOG)
+    print(now, out)
+
+
 def cmd_watch(args):
     """One 5-minute look at gold. The desk only runs, and only spends, when `watcher.tick` wakes it."""
+    if args.desk == "v31":
+        return cmd_watch_v31(args)
     from . import dashboard, live_data, news, oanda_data, watcher
     spec = I.get("XAU_USD")
     journal = args.journal or desk_v3.JOURNAL
@@ -137,8 +244,9 @@ def cmd_run(args):
     if llm is not None and as_of < pd.Timestamp(datetime.now(timezone.utc)) - pd.Timedelta(hours=6) and not args.allow_leaky:
         sys.exit("refusing a model run on a past date: the model may remember how that day ended. Use --allow-leaky to override "
                  "(the call is then NOT forward evidence).")
-    decide, show = {"v2": (desk_v2.decide_at, desk_v2.card), "v3": (desk_v3.decide_at, desk_v3.card)}.get(args.desk, (decide_at, card))
-    extra = {"live": v3_live(as_of)} if args.desk == "v3" else {}
+    decide, show = {"v2": (desk_v2.decide_at, desk_v2.card), "v3": (desk_v3.decide_at, desk_v3.card),
+                    "v31": (desk_v31.decide_at, desk_v31.card)}.get(args.desk, (decide_at, card))
+    extra = {"live": v3_live(as_of)} if args.desk == "v3" else {"live": v31_live(as_of)} if args.desk == "v31" else {}
     call = decide(m1, as_of, cfg, llm=llm, macro_df=macro_data.macro_frame(as_of.to_pydatetime()),
                   prior_entries=J.load(args.journal), **extra)
     keep_model_io(call, llm, args.journal, wrote=False)
@@ -212,6 +320,9 @@ def cmd_dashboard(args):
     if args.desk == "v3":
         print(f"wrote {dashboard.build(args.journal or desk_v3.JOURNAL, desk_v3.DASHBOARD, instrument=spec.oanda)}")
         return
+    if args.desk == "v31":
+        print(f"wrote {dashboard.build(args.journal or desk_v31.JOURNAL, desk_v31.DASHBOARD, instrument=spec.oanda)}")
+        return
     out = dashboard.build(args.journal or (desk_v2.journal_path(spec) if v2 else spec.journal_path),
                           desk_v2.dashboard_path(spec) if v2 else spec.dashboard_path, instrument=spec.oanda)
     print(f"wrote {out}")
@@ -242,8 +353,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="gold_agents")
     ap.add_argument("--journal", type=Path, default=None)
     ap.add_argument("--instrument", default="XAU_USD", help="XAU_USD (default), XAG_USD, EUR_USD, GBP_USD")
-    ap.add_argument("--desk", default="v1", choices=("v1", "v2", "v3"),
-                    help="v1 (original record), v2 (reads the chart, setups at levels) or v3 (gold only, woken by the market, reads the news)")
+    ap.add_argument("--desk", default="v1", choices=("v1", "v2", "v3", "v31"),
+                    help="v1 (original record), v2 (reads the chart, setups at levels), v3 (gold only, woken by the market, reads "
+                         "the news) or v31 (legs of a move, stops from the market, woken by gold, other markets or news)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--as-of"); r.add_argument("--llm", action="store_true")
     r.add_argument("--rules-only", action="store_true"); r.add_argument("--dry", action="store_true")
@@ -252,6 +364,8 @@ def main(argv=None):
     d = sub.add_parser("dashboard"); d.set_defaults(fn=cmd_dashboard)
     w = sub.add_parser("watch"); w.set_defaults(fn=cmd_watch)
     v = sub.add_parser("events"); v.set_defaults(fn=cmd_events)
+    n = sub.add_parser("news-poll", help="desk v3.1: one rules-only news poll; wakes the desk on a fresh relevant headline")
+    n.set_defaults(fn=cmd_news_poll)
     ALL = ",".join(I.INSTRUMENTS)
     g = sub.add_parser("digest"); g.add_argument("--as-of", required=True); g.add_argument("--instruments", default=ALL)
     g.add_argument("--send", action="store_true"); g.set_defaults(fn=cmd_digest)

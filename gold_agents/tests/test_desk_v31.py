@@ -475,3 +475,15 @@ def test_tick_adds_cross_triggers_behind_gold_ones(tmp_path):
     W.tick(T31, b2.fetch, b2.wake, tmp_path / "s2.json", tmp_path / "w2.jsonl", W.WATCH_V31, window=cal.desk_window,
            thin_sleeps=False, extra=lambda: cross)
     assert b2.woke == cross
+
+
+# ---------------- Task 7: one wake ----------------
+def test_a_v31_wake_logs_both_modes_with_one_fill_time_and_sends_only_the_model(history, tmp_path):
+    from gold_agents.__main__ import v31_wake
+    t = asof(history)
+    log, sent = tmp_path / "calls_v31.jsonl", []
+    v31_wake(sell_trigger(), t, fake31(history, t), history, None, LIVE, log, sent.append, clock=lambda: t + pd.Timedelta(seconds=75),
+             v31=D31.V31(counter_run=99))
+    a, b = J.load(log)
+    assert {a["mode"], b["mode"]} == {"llm", "rules"} and a["desk"] == "v31" and a["fill_from"] == b["fill_from"]
+    assert len(sent) == 1 and "v3.1 SELL" in sent[0]

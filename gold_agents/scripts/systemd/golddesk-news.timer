@@ -1,0 +1,10 @@
+[Unit]
+Description=Gold desk v3.1 news poll every minute (the poll itself does nothing while the market is shut in New York time)
+
+[Timer]
+OnCalendar=*-*-* *:*:20 UTC
+Persistent=false
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

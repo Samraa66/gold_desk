@@ -324,3 +324,8 @@ def card(call: dict) -> str:
         f"Hold up to {p.get('max_hold_hours', 0):g} h{flat}",
         call["reason"],
         "Research only: logged to the v3.1 forward test, no order placed."])
+
+
+def day_text(scored: list[dict], day: str, wakes: int = 0) -> str:
+    """The end-of-day line for Telegram: v3's, labelled v3.1."""
+    return V3.day_text(scored, day, wakes).replace("Gold v3 ", "Gold v3.1 ", 1)

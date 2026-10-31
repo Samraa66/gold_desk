@@ -1,0 +1,14 @@
+[Unit]
+Description=Gold desk v3.1 news poll (research only, places no orders)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=golddesk
+WorkingDirectory=/home/golddesk/gold_desk/gold_agents
+ExecStart=/bin/bash /home/golddesk/gold_desk/gold_agents/scripts/news_cycle.sh
+# Same manners as the watcher: low priority, a memory ceiling, first in line if memory runs out.
+Nice=10
+MemoryMax=450M
+OOMScoreAdjust=800
+TimeoutStartSec=280
