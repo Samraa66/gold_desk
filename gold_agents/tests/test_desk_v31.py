@@ -127,3 +127,184 @@ def test_liquidity_uses_given_window():
     rep = liquidity.run(ctx, window=cal.desk_window)
     assert not rep.veto and rep.facts["market"] == "open"
     assert liquidity.run(ctx, window=lambda t: ("break", "daily break")).veto
+
+
+# ---------------- Task 4: desk v3.1 core ----------------
+from gold_agents import desk_v31 as D31  # noqa: E402
+from gold_agents.context import build_context  # noqa: E402
+from gold_agents.llm import FakeLLM  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def history():
+    return make_m1(start="2026-06-01", days=136, seed=5, vol=0.25)
+
+
+def asof(hist):
+    return hist.index[hist.index.dayofweek == 2][-1000]          # a Wednesday, 2026-10-14 15:20 UTC
+
+
+def sell_trigger(price=1.0):
+    return {"kind": "level_break", "direction": "SELL", "level": price, "name": "asia_low"}
+
+
+LIVE = {"cross": {"USD_JPY": {"chg_1h_pct": 0.4, "chg_4h_pct": 0.9}}, "book": {"above": [], "below": []},
+        "positions": {"long_pct": 70.0}, "volume_ratio": 2.4,
+        "news": [{"title": "Gold slides as yields jump", "source": "Reuters", "age_min": 12, "published": "x"}]}
+
+
+def price_at(hist, t):
+    return float(hist.loc[:t - pd.Timedelta(minutes=1), "close"].iloc[-1])
+
+
+def fake31(hist, t, conf=0.55, stop_gap=8.0, decision="PLACE", direction="SELL", hold=3.0, **chart):
+    px = price_at(hist, t)
+    sign = 1 if direction == "BUY" else -1
+    return FakeLLM({
+        "Chart trader": {"bias": 0.6 * sign, "confidence": 0.6, "read": "breakdown", **chart, "setup": {
+            "direction": direction, "entry_type": "market", "entry": None, "stop": px - sign * stop_gap,
+            "tp1": px + sign * (1.5 * stop_gap + 1), "tp2": px + sign * 3 * stop_gap, "valid_hours": 1, "max_hold_hours": hold,
+            "why": "broke the Asia low"}},
+        "Cross-asset analyst": {"score": -0.3, "confidence": 0.5, "summary": "dollar firm"},
+        "News analyst": {"score": -0.4, "confidence": 0.6, "summary": "yields driving gold down", "driver": "yields", "risk_flag": False},
+        "Master trader": {"decision": decision, "confidence": conf, "reason": "clean break"}})
+
+
+def decide31(hist, t, llm=None, **kw):
+    return D31.decide_at(hist, t, D31.config(), llm=llm, events=kw.pop("events", []), macro_df=None, live=kw.pop("live", LIVE),
+                         trigger=kw.pop("trigger", sell_trigger()), v31=kw.pop("v31", D31.V31(counter_run=99)), **kw)
+
+
+def open_entry(t, mode, direction, px, minutes_before=30):
+    """A logged call still open at `t`: a market plan with levels far from price."""
+    sign = 1 if direction == "BUY" else -1
+    at = t - pd.Timedelta(minutes=minutes_before)
+    return {"id": f"{at.isoformat()}|{mode}|x", "as_of": at.isoformat(), "mode": mode, "decision": direction, "price": px,
+            "plan": {"direction": direction, "entry_type": "market", "entry": px, "stop": px - sign * 70, "tp1": px + sign * 150,
+                     "tp2": px + sign * 200, "max_hold_hours": 24.0}}
+
+
+def test_v31_config_and_hash():
+    cfg = D31.config()
+    assert (cfg.equity, cfg.risk_pct, cfg.daily_loss_limit_r, cfg.max_open_calls, cfg.master_min_confidence) == (5000.0, 1.5, 3.0, 2, 0.5)
+    assert cfg.min_stop == 0.0 and cfg.max_stop == float("inf") and cfg.same_side_cooldown_h == 0.0 and cfg.expiry_hours == 24.0
+    assert D31.V31().min_rr == 1.5
+    h = D31.v31_hash(cfg)
+    assert h not in (KNOWN_HASHES["v3"], KNOWN_HASHES["v2"]["XAU_USD"]) and h != D31.v31_hash(cfg, D31.V31(min_rr=2.0))
+    assert D31.JOURNAL.name == "calls_v31.jsonl" and D31.OUTCOMES.name == "outcomes_v31.jsonl" and D31.PROMPTS.name == "prompts_v31.jsonl"
+    assert D31.DASHBOARD.name == "dashboard_v31.html" and D31.WATCH_LOG.name == "watch_v31.jsonl"
+    assert D31.WATCH_STATE.name == "watch_state_v31.json" and D31.BRIEF_LOG.name == "brief_v31.jsonl"
+
+
+def test_rules_calls_do_not_fill_the_model_limit(history):
+    """10-30 19:46: the model passed on "3 calls open, limit 2" because the rules baseline's call counted."""
+    t = asof(history)
+    px = price_at(history, t)
+    prior = [open_entry(t, "llm", "BUY", px), open_entry(t, "rules", "SELL", px, 20), open_entry(t, "rules", "SELL", px, 10)]
+    assert [e["mode"] for e in D31.prior_for(prior, "llm")] == ["llm"]
+    call = decide31(history, t, fake31(history, t), prior_entries=prior)
+    assert call["decision"] == "SELL", call["reason"]
+    # and the bug as it was: v3 counts all three
+    v3_state = J.state_at(J.score_entries(prior, history.loc[:t - pd.Timedelta(minutes=1)], D31.config(), t), t)
+    assert v3_state["open_calls"] == 3
+
+
+def test_same_side_waits_for_close_but_not_a_clock(history):
+    t = asof(history)
+    px = price_at(history, t)
+    blocked = decide31(history, t, fake31(history, t), prior_entries=[open_entry(t, "llm", "SELL", px)])
+    assert blocked["decision"] == "PASS" and "still open" in blocked["reason"]
+    closed = open_entry(t, "llm", "SELL", px, 10)
+    closed["plan"].update(max_hold_hours=0.05)                       # closed three minutes after it opened, seven before `t`
+    scored = J.score_entries([closed], history.loc[:t - pd.Timedelta(minutes=1)], D31.config(), t)
+    assert scored[0]["scores"]["master"]["outcome"] == "expired" and not D31.side_open(scored, "SELL")
+    call = decide31(history, t, fake31(history, t), prior_entries=[closed])
+    assert call["decision"] == "SELL", call["reason"]
+
+
+def ctx_at(hist, t, events=()):
+    return build_context(hist, t, D31.config(), None, list(events), {})
+
+
+def market_sell(px, gap, hold=None):
+    return {"direction": "SELL", "entry_type": "market", "entry": None, "stop": px + gap, "tp1": px - 1.6 * gap, "tp2": px - 3 * gap,
+            "valid_hours": 1, "max_hold_hours": hold, "why": "x"}
+
+
+def test_wide_stop_allowed_when_sizable(history):
+    ctx = ctx_at(history, asof(history))
+    plan, why = D31.check(ctx, market_sell(ctx.price, 40.0), D31.V31(counter_run=99), {}, atr_m5=2.0)
+    assert why is None and plan["lots"] == 0.01 and plan["risk_usd"] == pytest.approx(40.0)
+
+
+def test_stop_too_wide_to_size_is_refused(history):
+    ctx = ctx_at(history, asof(history))
+    plan, why = D31.check(ctx, market_sell(ctx.price, 90.0), D31.V31(counter_run=99), {}, atr_m5=2.0)
+    assert plan is None and "even 0.01 lot risks $90" in why and "$75" in why
+
+
+def test_stop_inside_noise_refused(history):
+    ctx = ctx_at(history, asof(history))
+    plan, why = D31.check(ctx, market_sell(ctx.price, 4.0), D31.V31(counter_run=99), {}, atr_m5=6.0)
+    assert plan is None and "M5 noise" in why
+
+
+def test_bad_hold_defaults(history):
+    v = D31.V31()
+    for bad in (None, 0, -1, "soon", float("nan"), float("inf"), True):
+        assert D31.normal_hold(bad, v) == v.default_hold_hours, bad
+    assert D31.normal_hold("2.5", v) == 2.5
+    ctx = ctx_at(history, asof(history))
+    plan, _ = D31.check(ctx, market_sell(ctx.price, 10.0, hold=10000), D31.V31(counter_run=99), {}, atr_m5=2.0)
+    assert plan["max_hold_hours"] == 10000
+    assert J._expiry(plan, ctx.as_of, D31.config()) == pd.Timestamp(plan["flat_by"])     # cut by the Friday close
+
+
+def test_bad_hold_from_the_model_never_crashes(history):
+    t = asof(history)
+    for bad in (None, 0, "soon", 1e9):
+        call = decide31(history, t, fake31(history, t, hold=bad))
+        assert call["decision"] == "SELL" and call["plan"]["max_hold_hours"] > 0
+
+
+def test_plan_carries_flat_by(history):
+    ctx = ctx_at(history, asof(history))
+    plan, _ = D31.check(ctx, market_sell(ctx.price, 10.0), D31.V31(counter_run=99), {}, atr_m5=2.0)
+    assert pd.Timestamp(plan["flat_by"]) == pd.Timestamp(cal.next_friday_close(ctx.as_of.to_pydatetime()))
+    assert plan["flat_by"].startswith("2026-10-16 21:00")
+
+
+def test_pending_order_never_valid_past_flat_by(history):
+    t = pd.Timestamp("2026-10-16T16:00:00Z")                         # Friday, five hours before the close
+    ctx = ctx_at(history, t)
+    px = ctx.price
+    setup = {"direction": "SELL", "entry_type": "limit", "entry": px + 2, "stop": px + 12, "tp1": px - 14, "tp2": px - 30,
+             "valid_hours": 12, "why": "x"}
+    plan, why = D31.check(ctx, setup, D31.V31(counter_run=99), {}, atr_m5=2.0)
+    assert why is None and pd.Timestamp(plan["valid_until"]) == pd.Timestamp(plan["flat_by"])
+
+
+def test_card_shows_risk_at_minimum_lot(history):
+    t = asof(history)
+    call = decide31(history, t, fake31(history, t, stop_gap=12.5))
+    text = D31.card(call)
+    dist = abs(call["plan"]["entry"] - call["plan"]["stop"])
+    assert f"Stop distance {dist:.2f}" in text and f"At 0.01 lot: risk ${dist:.2f}" in text
+    assert "v3.1 SELL" in text.splitlines()[0] and "Woken by: level_break" in text
+
+
+def test_post_event_block_and_no_fade_still_apply(history):
+    t = asof(history)
+    cpi = {"time": (t - pd.Timedelta(hours=1)).to_pydatetime(), "name": "US CPI", "impact": "high"}
+    call = decide31(history, t, fake31(history, t), events=[cpi])
+    assert call["decision"] == "PASS" and "after US CPI" in call["reason"]
+    ctx = ctx_at(history, t)
+    st = {"short_sequence": {"timeframe": "M5", "rising_lows": 2, "falling_highs": 0, "lows": [1, 2, 3], "highs": []}}
+    plan, why = D31.check(ctx, market_sell(ctx.price, 10.0), D31.V31(), st, atr_m5=2.0)
+    assert plan is None and "lows have risen" in why
+
+
+def test_liquidity_reads_new_york_hours(history):
+    t = pd.Timestamp("2026-10-16T20:30:00Z")                         # Fri 16:30 New York: v3's window was already shut
+    call = decide31(history, t)
+    assert call["reports"]["liquidity"]["facts"]["market"] == "open"
