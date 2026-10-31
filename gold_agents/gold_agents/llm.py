@@ -38,13 +38,11 @@ def parse_json(text: str) -> dict:
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1)
-    else:
-        start = text.find("{")
-        if start == -1:
-            raise ValueError(f"no JSON object in model reply: {text[:120]!r}")
-        # The FIRST complete object: a reply that adds a note (or a second object) after it used to fail with "Extra data".
-        return json.JSONDecoder().raw_decode(text[start:])[0]
-    return json.loads(text)
+    start = text.find("{")
+    if start == -1:
+        raise ValueError(f"no JSON object in model reply: {text[:120]!r}")
+    # The FIRST complete object: a reply that adds a note (or a second object) after it used to fail with "Extra data".
+    return json.JSONDecoder().raw_decode(text[start:])[0]
 
 
 class AnthropicLLM:
