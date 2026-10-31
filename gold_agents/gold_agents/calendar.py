@@ -24,6 +24,7 @@ FOMC_DECISION_DAYS_2026 = [date(2026, 1, 28), date(2026, 3, 18), date(2026, 4, 2
                            date(2026, 7, 29), date(2026, 9, 16), date(2026, 10, 28), date(2026, 12, 9)]
 
 EVENTS_FILE = Path(__file__).resolve().parent.parent / "events.csv"
+EVENTS_V31_FILE = EVENTS_FILE.with_name("events_v31.csv")    # desk v3.1's wider list (other central banks, medium impact)
 
 
 def _ny_to_utc(d: date, hh: int, mm: int) -> datetime:

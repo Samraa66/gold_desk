@@ -118,3 +118,97 @@ def test_v31_commands_parse():
         with pytest.raises(SystemExit) as e:
             main(argv)
         assert e.value.code == 0
+
+
+# ---------------- Task 8: wider inputs ----------------
+from gold_agents import calendar as cal2  # noqa: E402
+from gold_agents import macro_data as M  # noqa: E402
+
+FF = [{"title": "CPI m/m", "country": "USD", "date": "2026-11-12T08:30:00-05:00", "impact": "High"},
+      {"title": "Retail Sales m/m", "country": "USD", "date": "2026-11-13T08:30:00-05:00", "impact": "Medium"},
+      {"title": "Crude Oil Inventories", "country": "USD", "date": "2026-11-12T10:30:00-05:00", "impact": "Low"},
+      {"title": "BOJ Policy Rate", "country": "JPY", "date": "2026-11-11T22:00:00-05:00", "impact": "High"},
+      {"title": "BOJ Gov Ueda Speaks", "country": "JPY", "date": "2026-11-12T01:00:00-05:00", "impact": "Medium"},
+      {"title": "German ZEW Economic Sentiment", "country": "EUR", "date": "2026-11-10T05:00:00-05:00", "impact": "Medium"}]
+
+
+def test_calendar_keeps_boj_and_medium_marked():
+    rows = {r["name"]: r for r in N.calendar_rows(FF)}
+    assert rows["CPI m/m"]["impact"] == "high" and rows["Retail Sales m/m"]["impact"] == "medium"
+    assert rows["JPY BOJ Policy Rate"] == {"time_utc": "2026-11-12T03:00:00Z", "name": "JPY BOJ Policy Rate", "impact": "high"}
+    assert rows["JPY BOJ Gov Ueda Speaks"]["impact"] == "medium"
+    assert "Crude Oil Inventories" not in rows and not any("ZEW" in n for n in rows)      # low impact, and not a central bank
+    from gold_agents import news
+    assert news.parse_calendar(FF) == [{"time_utc": "2026-11-12T13:30:00Z", "name": "CPI m/m", "impact": "high"}]   # v1-v3 unchanged
+
+
+def test_refresh_writes_both_lists_from_one_read(tmp_path):
+    calls = []
+
+    class Session:
+        def get(self, url, **kw):
+            calls.append(url)
+            return type("R", (), {"raise_for_status": lambda self: None, "json": lambda self: FF})()
+
+    v3, v31 = tmp_path / "events.csv", tmp_path / "events_v31.csv"
+    assert N.refresh_calendars(Session(), v3, v31) == (1, 4) and len(calls) == 1
+    assert [e["name"] for e in cal2.file_events(v3)] == ["CPI m/m"]
+    assert {e["impact"] for e in cal2.file_events(v31)} == {"high", "medium"}
+
+
+def test_only_high_impact_blocks(tmp_path):
+    v31 = tmp_path / "events_v31.csv"
+    from gold_agents import news
+    news.write_events(N.calendar_rows(FF), v31)
+    ev = cal2.file_events(v31)
+    at = lambda s: pd.Timestamp(s).to_pydatetime()
+    assert cal2.blocking_event(at("2026-11-13T13:40:00Z"), 30, 30, ev) is None                 # medium retail sales: shown, not blocked
+    assert cal2.blocking_event(at("2026-11-12T03:10:00Z"), 30, 30, ev)["name"] == "JPY BOJ Policy Rate"
+
+
+def test_sources_add_primary_feeds_and_keep_one_per_story():
+    fed = """<?xml version="1.0"?><rss><channel>
+<item><title>Federal Reserve issues FOMC statement</title><pubDate>Tue, 03 Nov 2026 14:29:00 GMT</pubDate></item>
+</channel></rss>"""
+
+    class Session:
+        def get(self, url, **kw):
+            text = fed if "federalreserve" in url else RSS
+            return type("R", (), {"ok": True, "text": text})()
+
+    heads = N.sources(T, Session())
+    first = heads[0]
+    assert first["title"] == "Federal Reserve issues FOMC statement" and first["source"] == "Federal Reserve" and first["primary"]
+    assert sum(h["title"].startswith("Gold falls to one-year low") for h in heads) == 1
+    assert [h["title"] for h in N.for_desk(heads)][:2] == ["Federal Reserve issues FOMC statement", "Gold falls to one-year low - Reuters"]
+    assert N.headline_lag(N.for_desk(heads))["newest_min"] == 2 and N.headline_lag([]) == "unavailable"
+
+
+def test_dead_feeds_give_unavailable_not_a_guess(tmp_path):
+    class Dead:
+        def get(self, *a, **kw):
+            import requests
+            raise requests.ConnectionError("down")
+
+    assert N.sources(T, Dead()) == []
+    assert M.real_yield(T, Dead(), cache_dir=tmp_path) == "unavailable"
+    assert M.cot_gold(T, Dead(), cache_dir=tmp_path) == "unavailable"
+    assert M.etf_flows(T) == "unavailable"
+
+
+def test_real_yield_and_cot_carry_their_age(tmp_path):
+    fred = "observation_date,DFII10\n" + "\n".join(f"2026-10-{d:02d},{1.80 + d / 100:.2f}" for d in range(20, 31)) + "\n2026-11-02,.\n"
+    cot = ('[{"report_date_as_yyyy_mm_dd": "2026-10-27T00:00:00.000", "noncomm_positions_long_all": "250000", '
+           '"noncomm_positions_short_all": "60000", "open_interest_all": "500000"}, '
+           '{"report_date_as_yyyy_mm_dd": "2026-10-20T00:00:00.000", "noncomm_positions_long_all": "260000", '
+           '"noncomm_positions_short_all": "55000", "open_interest_all": "510000"}]')
+
+    class Session:
+        def get(self, url, **kw):
+            text = fred if "fred" in url else cot
+            return type("R", (), {"raise_for_status": lambda self: None, "text": text})()
+
+    ry = M.real_yield(T, Session(), cache_dir=tmp_path)
+    assert ry["value_pct"] == 2.10 and ry["date"] == "2026-10-30" and ry["age_days"] == 4.6 and ry["change_5d_pp"] == 0.05
+    c = M.cot_gold(T, Session(), cache_dir=tmp_path)
+    assert c["noncommercial_net"] == 190000 and c["net_change_week"] == -15000 and c["report_date"] == "2026-10-27" and c["age_days"] > 7

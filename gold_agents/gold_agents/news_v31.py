@@ -33,7 +33,7 @@ DRIVERS = re.compile(
 # results, jewellery, city rate tables.
 JUNK = re.compile(
     r"(sedar|robinhood|ni 43-101|private placement|drill|intersects?|mineral resource|feasibility study|exploration update|"
-    r"jewel|gold rate in |price today|stock (price|forecast)|\bgold price (january|february|march|april|may|june|july|august|"
+    r"jewel|gold rate in |price today|enforcement action|stock (price|forecast)|\bgold price (january|february|march|april|may|june|july|august|"
     r"september|october|november|december) \d{1,2},? \d{4})", re.I)
 
 
@@ -70,7 +70,7 @@ def load_seen(path: Path) -> dict:
 
 def poll(now: pd.Timestamp, session=requests, seen_path: Path | None = None, max_age_min: int = MAX_AGE_MIN) -> list[dict]:
     """One poll of the sources: fresh relevant headlines, marked seen so each wakes the desk at most once. Rules only."""
-    heads = sources(now, session)
+    heads = sources(now, session, hours=max(1.0, max_age_min / 60 + 0.5))
     seen = load_seen(seen_path) if seen_path else {}
     new = fresh(heads, set(seen), max_age_min)
     if seen_path is not None:
@@ -81,17 +81,80 @@ def poll(now: pd.Timestamp, session=requests, seen_path: Path | None = None, max
     return new
 
 
-def sources(now: pd.Timestamp, session=requests) -> list[dict]:
-    """Every headline the poll reads, newest first. A dead feed gives nothing, never a guess."""
+# Google News (as v3) plus primary sources: the Federal Reserve's and the Treasury's own press feeds, which carry a decision or
+# a statement before any article about it. Titles only: article text is not fetched (no free source whose terms clearly allow it
+# was confirmed). The two primary URLs were written without network access from the build machine; check them on the VPS.
+PRIMARY = {"Federal Reserve": "https://www.federalreserve.gov/feeds/press_all.xml",
+           "US Treasury": "https://home.treasury.gov/news/press-releases/feed"}
+
+
+def sources(now: pd.Timestamp, session=requests, hours: float = 12.0) -> list[dict]:
+    """Every headline the desk can read, newest first, one per id: Google News and the primary feeds, published by `now`.
+    A dead feed gives nothing, never a guess."""
     rows = []
-    for url in news.FEEDS:
+    feeds = [(None, url) for url in news.FEEDS] + [(name, url) for name, url in PRIMARY.items()]
+    for name, url in feeds:
         try:
             r = session.get(url, headers=news.HEADERS, timeout=15)
             if r.ok:
-                rows.extend(news.parse_rss(r.text, now, hours=2.0))
+                got = news.parse_rss(r.text, now, hours=hours, limit=50)
+                rows.extend({**h, "source": h["source"] or name, "primary": name is not None} for h in got)
         except requests.RequestException:
             continue
-    return sorted(rows, key=lambda x: x["age_min"])
+    out, ids = [], set()
+    for h in sorted(rows, key=lambda x: x["age_min"]):
+        if head_id(h) not in ids:
+            ids.add(head_id(h))
+            out.append(h)
+    return out
+
+
+def for_desk(heads: list[dict], limit: int = 25) -> list[dict]:
+    """What the news agent reads: the relevant headlines only, newest first."""
+    return [h for h in heads if relevant(h.get("title", ""))][:limit]
+
+
+def headline_lag(heads: list[dict]) -> dict | str:
+    """How old the news is when the desk wakes, measured on every wake: the newest and the median relevant headline's age."""
+    ages = sorted(h["age_min"] for h in heads if h.get("age_min") is not None)
+    if not ages:
+        return "unavailable"
+    return {"newest_min": ages[0], "median_min": ages[len(ages) // 2], "count": len(ages)}
+
+
+# ---------------------------------------------------------------- calendar (wider than v1-v3's)
+EVENTS_V31 = cal.EVENTS_V31_FILE
+CENTRAL_BANK = re.compile(r"(rate|monetary policy|policy statement|press conference|minutes|bank|governor|lagarde|ueda|bailey|"
+                          r"outlook report|mpc|fomc)", re.I)
+
+
+def calendar_rows(rows: list[dict]) -> list[dict]:
+    """From the weekly calendar feed: US releases of high or medium impact, and other central banks' decisions, statements and
+    speeches of high or medium impact, each marked with its impact. Only `high` blocks the desk (`calendar.blocking_event`)."""
+    out = []
+    for e in rows:
+        impact, country, title = str(e.get("impact", "")).lower(), str(e.get("country", "")), str(e.get("title", ""))
+        if impact not in ("high", "medium"):
+            continue
+        if country != "USD" and not CENTRAL_BANK.search(title):
+            continue
+        try:
+            t = pd.Timestamp(e["date"]).tz_convert("UTC")
+        except (KeyError, TypeError, ValueError):
+            continue
+        out.append({"time_utc": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "name": title if country == "USD" else f"{country} {title}",
+                    "impact": impact})
+    return out
+
+
+def refresh_calendars(session=requests, path_v3: Path | None = None, path_v31: Path | None = None) -> tuple[int, int]:
+    """One read of the calendar feed, written twice: events.csv (high-impact US, what v1-v3 block on, unchanged) and
+    events_v31.csv (the wider list). -> new rows in each."""
+    r = session.get(news.CALENDAR, headers=news.HEADERS, timeout=15)
+    r.raise_for_status()
+    rows = r.json()
+    return (news.write_events(news.parse_calendar(rows), path_v3 or cal.EVENTS_FILE),
+            news.write_events(calendar_rows(rows), path_v31 or EVENTS_V31))
 
 
 def trigger(h: dict) -> dict:

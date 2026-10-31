@@ -164,6 +164,132 @@ def loose_check(ctx: Context, setup: dict, v31: V31, st: dict | None) -> dict | 
     return raw
 
 
+# ---------------------------------------------------------------- inputs: each with its age, or "unavailable"
+POSITIONS_NOTE = ("omitted from every v3.1 prompt: OANDA's client positions read 70.9% long on all six runs on 2026-10-30 while "
+                  "the timestamp moved, and the cause has not been found yet (README, desk v3.1). Logged here so it can be.")
+
+
+def _age_min(now: pd.Timestamp, t) -> float | None:
+    try:
+        return round((now - pd.Timestamp(t)).total_seconds() / 60, 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def live_inputs(now: pd.Timestamp, oanda=None, bars: pd.DataFrame | None = None, cross: dict | None = None, session=None) -> dict:
+    """Everything v3.1 reads besides its candles, fetched once per wake and stored on the call. Every value carries its age or
+    is the string "unavailable"; a dead source is never filled in."""
+    import requests
+    from . import live_data as D
+    from . import macro_data, news_v31
+    session = session or requests
+    oanda = oanda or D.Oanda()
+    out = {"cross": {}, "book": "unavailable", "positions": "unavailable", "volume_ratio": None}
+    try:
+        b = bars if bars is not None else oanda.m5()
+        out["volume_ratio"] = D.volume_ratio(b)
+        price = float(b["close"].iloc[-1])
+        book = D.parse_book(oanda._json(f"{D.GOLD}/orderBook"), price, 60.0)
+        out["book"] = {**book, "age_min": _age_min(now, book.get("time"))}
+        pos = D.parse_positions(oanda._json(f"{D.GOLD}/positionBook"))
+        out["positions"] = {**pos, "age_min": _age_min(now, pos.get("time")), "note": POSITIONS_NOTE}
+    except Exception as e:
+        print(f"gold book unavailable: {e}")
+    for inst, meaning in D.CROSS.items():
+        try:
+            cb = (cross or {}).get(inst)
+            cb = cb if cb is not None and len(cb) else oanda.m5(inst, 60)
+            out["cross"][inst] = {"meaning": meaning, **D.changes(cb), "age_min": _age_min(now, cb.index[-1] + pd.Timedelta(minutes=5))}
+        except Exception as e:
+            print(f"{inst} unavailable: {e}")
+            out["cross"][inst] = "unavailable"
+    heads = news_v31.sources(now, session)
+    out["news"] = news_v31.for_desk(heads)
+    out["headline_lag_min"] = news_v31.headline_lag(out["news"])
+    out["real_yield"] = macro_data.real_yield(now, session)
+    out["cot"] = macro_data.cot_gold(now, session)
+    out["etf_flows"] = macro_data.etf_flows(now)
+    return out
+
+
+def inputs_record(ctx: Context, live: dict) -> dict:
+    """One line per input on the call: its age, or "unavailable", so every input can be judged later."""
+    def age(v, key="age_min"):
+        if v in (None, "unavailable") or (isinstance(v, (list, dict)) and not v):
+            return "unavailable"
+        return {key: v.get(key)} if isinstance(v, dict) and key in v else "present"
+
+    heads, pos = live.get("news") or [], live.get("positions")
+    macro_day = ctx.macro.index[-1] if ctx.macro is not None and len(ctx.macro) else None
+    cross = live.get("cross") or {}
+    return {
+        "gold_bars": {"age_min": round((ctx.as_of - ctx.last_bar_end).total_seconds() / 60, 1)},
+        "news": {"headlines": len(heads), "lag": live.get("headline_lag_min", "unavailable")} if heads else "unavailable",
+        "headline_lag_min": live.get("headline_lag_min", "unavailable"),
+        "cross": {k: age(v) for k, v in cross.items()} or "unavailable",
+        "order_book": age(live.get("book")),
+        "positions": {"age_min": pos.get("age_min"), "in_prompts": False} if isinstance(pos, dict) else "unavailable",
+        "volume_ratio": "present" if live.get("volume_ratio") is not None else "unavailable",
+        "macro_daily": {"age_days": round((ctx.as_of - macro_day).total_seconds() / 86400, 1)} if macro_day is not None else "unavailable",
+        "real_yield": age(live.get("real_yield"), "age_days"),
+        "cot": age(live.get("cot"), "age_days"),
+        "etf_flows": age(live.get("etf_flows"), "age_days"),
+        "calendar": {"events_file_age_days": cal.events_file_age_days(cal.EVENTS_V31_FILE)} if cal.EVENTS_V31_FILE.exists() else
+                    {"events_file_age_days": cal.events_file_age_days(), "note": "events_v31.csv missing; v1-v3's events.csv only"},
+    }
+
+
+def default_events(as_of: pd.Timestamp) -> list[dict]:
+    """FOMC and payrolls built in, plus events.csv (v1-v3's list) and events_v31.csv (the wider one), each event once. Only
+    `high` rows block (`calendar.blocking_event`); medium rows are shown to the agents."""
+    t = as_of.to_pydatetime()
+    pool = cal.builtin_events(t - pd.Timedelta(days=2), t + pd.Timedelta(days=2)) + cal.file_events(cal.EVENTS_FILE) + cal.file_events(cal.EVENTS_V31_FILE)
+    seen, out = set(), []
+    for e in pool:
+        k = (e["time"], e["name"])
+        if k not in seen:
+            seen.add(k)
+            out.append(e)
+    return out
+
+
+def news_run(ctx: Context, live: dict, llm=None, brief: dict | None = None) -> Report:
+    """v3's news agent and role, plus the measured headline lag (and, from Task 9, the daily brief). Headlines reach the model
+    only inside the JSON facts block, never in its role text."""
+    heads = live.get("news") or []
+    rep = Report("news", 0.0, 0.0, "no headlines available; abstaining" if not heads else "headlines not read in rules mode",
+                 facts={"headlines": heads, "headline_lag_min": live.get("headline_lag_min", "unavailable")})
+    if llm is None or not heads:
+        return rep
+    facts = {"as_of": str(ctx.as_of), "headline_lag_min": live.get("headline_lag_min"), "headlines": heads}
+    if brief:
+        facts["daily_brief"] = brief_facts(brief)
+    from .agents.base import refine
+    reply = ask(llm, ctx.cfg.quick_model, V3.NEWS_ROLE, V3.NEWS_SCHEMA, facts, ctx.cfg.max_tokens, ctx.cfg, agent="news")
+    refine(rep, reply, ctx.cfg.quick_model)
+    rep.facts.update(driver=str(reply.get("driver", ""))[:80], risk_flag=bool(reply.get("risk_flag")))
+    return rep
+
+
+def macro_run(ctx: Context, live: dict, llm=None, brief: dict | None = None) -> Report:
+    """v1's daily macro plus v3's intraday markets, and v3.1's real yield, COT, ETF flows and the wider calendar, each with
+    its age or "unavailable"."""
+    from .agents import macro
+    from .agents.base import refine
+    rep = macro.run(ctx, None)
+    t = ctx.as_of.to_pydatetime()
+    rep.facts.update(intraday=live.get("cross") or {}, real_yield=live.get("real_yield", "unavailable"),
+                     cot=live.get("cot", "unavailable"), etf_flows=live.get("etf_flows", "unavailable"),
+                     calendar_48h=[{"in_hours": round((e["time"] - t).total_seconds() / 3600, 1), "name": e["name"], "impact": e["impact"]}
+                                   for e in cal.next_events(t, 48, ctx.events)])
+    if brief:
+        rep.facts["daily_brief"] = brief_facts(brief)
+    if llm is not None:
+        refine(rep, ask(llm, ctx.cfg.quick_model, V3.MACRO_ROLE, V3.MACRO_SCHEMA, rep.facts, ctx.cfg.max_tokens, ctx.cfg, agent="macro"),
+               ctx.cfg.quick_model)
+    return rep
+
+
 # ---------------------------------------------------------------- chart agent
 # Replaces v3's "quick trades" and "$5-15" text: the model reads the day and the move, and sets stop, target, validity and
 # holding time from the market, justifying each. The no-fade, squeeze and post-event sentences are v3's.
@@ -196,6 +322,7 @@ def _pick(value, allowed: tuple) -> str:
 
 def chart_run(ctx: Context, v31: V31, m5: pd.DataFrame, trigger: dict | None, live: dict, move: dict, llm=None) -> Report:
     st, candles = V3.chart_facts(ctx, _v3(v31), m5, live)
+    st.pop("positions", None)                                     # see POSITIONS_NOTE: not trusted until its cause is found
     setup = V3.rules_setup(ctx, st, trigger, _v3(v31), st["atr"]["m5"])
     live_setup = setup["entry_type"] != "none"
     rep = Report("chart", score=float(st["h1_pattern"]["bias"]) if live_setup else 0.0, confidence=0.5 if live_setup else 0.0,
@@ -244,7 +371,7 @@ def master_decide(ctx: Context, reports: dict, plan: dict | None, why_not: str |
              "news": {"score": news.score, "confidence": news.confidence, "summary": news.summary, "driver": news.facts.get("driver"),
                       "risk_flag": news.facts.get("risk_flag")},
              "liquidity": {"summary": liq.summary, "next_events_48h": liq.facts.get("next_events_48h"),
-                           "positions": live.get("positions"), "volume_vs_normal": live.get("volume_ratio")}}
+                           "volume_vs_normal": live.get("volume_ratio")}}
     if brief:
         facts["daily_brief"] = brief_facts(brief)
     reply = ask(llm, cfg.deep_model, MASTER_ROLE, V.MASTER_SCHEMA, facts, cfg.max_tokens, cfg, agent="master")
@@ -277,11 +404,11 @@ def decide_at(m1_all: pd.DataFrame, as_of, cfg: Config, *, llm=None, macro_df=No
     live = live or {}
     mode = "llm" if llm is not None else "rules"
     state, scored = state_for(prior_entries or [], mode, m1_all, as_of, cfg)
-    ctx = build_context(m1_all, as_of, cfg, macro_df, events, state)
+    ctx = build_context(m1_all, as_of, cfg, macro_df, default_events(as_of) if events is None else events, state)
     m5 = V3.m5_bars(ctx)
     move = moves.current(ctx.tf, as_of, F.atr(ctx.tf["D1"]), scored)
-    reports = {"chart": chart_run(ctx, v31, m5, trigger, live, move, llm), "macro": V3.macro_run(ctx, live, llm),
-               "news": V3.news_run(ctx, live, llm), "liquidity": liquidity.run(ctx, window=cal.desk_window)}
+    reports = {"chart": chart_run(ctx, v31, m5, trigger, live, move, llm), "macro": macro_run(ctx, live, llm, brief),
+               "news": news_run(ctx, live, llm, brief), "liquidity": liquidity.run(ctx, window=cal.desk_window)}
     chart = reports["chart"]
     st, atr_m5 = chart.facts["structure"], chart.facts["structure"]["atr"]["m5"]
     plan, why_not = check(ctx, chart.facts["setup"], v31, st, atr_m5)
@@ -298,7 +425,8 @@ def decide_at(m1_all: pd.DataFrame, as_of, cfg: Config, *, llm=None, macro_df=No
     return {"id": f"{as_of.isoformat()}|{mode}|{h}", "as_of": as_of.isoformat(), "desk": "v31", "mode": mode, "rules_hash": h,
             "decided_by": source, "decision": decision, "reason": reason, "price": round(ctx.price, I.of(cfg).dp),
             "instrument": I.of(cfg).oanda, "trigger": trigger, "plan": chosen, "reports": {k: r.to_dict() for k, r in reports.items()},
-            "baselines": baselines}
+            "baselines": baselines, "inputs": inputs_record(ctx, live),
+            "positions_raw": live.get("positions", "unavailable")}
 
 
 # ---------------------------------------------------------------- the card

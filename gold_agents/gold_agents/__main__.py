@@ -86,9 +86,10 @@ def v3_wake(trigger, as_of: pd.Timestamp, llm, m1, macro_df, live: dict, journal
     return calls
 
 
-def v31_live(now: pd.Timestamp, oanda=None, bars=None) -> dict:
-    """What v3.1 reads besides its own candles, fetched once and stored on the call. A dead source comes back empty."""
-    return v3_live(now, oanda, bars)
+def v31_live(now: pd.Timestamp, oanda=None, bars=None, cross=None) -> dict:
+    """What v3.1 reads besides its own candles, fetched once and stored on the call. Each input carries its age or is
+    "unavailable" (`desk_v31.live_inputs`)."""
+    return desk_v31.live_inputs(now, oanda, bars, cross)
 
 
 def v31_wake(trigger, as_of: pd.Timestamp, llm, m1, macro_df, live: dict, journal: Path, send=notify.send, clock=None,
@@ -113,21 +114,22 @@ def v31_wake(trigger, as_of: pd.Timestamp, llm, m1, macro_df, live: dict, journa
     return calls
 
 
-def v31_desk_wake(trigger, at: pd.Timestamp, oanda=None, bars=None, journal: Path | None = None) -> list[dict]:
+def v31_desk_wake(trigger, at: pd.Timestamp, oanda=None, bars=None, journal: Path | None = None, cross: dict | None = None) -> list[dict]:
     """The one wake behind `--desk v31 watch` and `news-poll`: refresh bars, read the live inputs, decide, score, rebuild the
     dashboard. Callers hold journal/.bars.lock (the shell scripts), so a tick and a news poll never run it at once."""
-    from . import dashboard, live_data, news, oanda_data, watcher
+    from . import dashboard, live_data, oanda_data, watcher
     spec = I.get("XAU_USD")
     journal = journal or desk_v31.JOURNAL
     oanda = oanda or live_data.Oanda()
     print(oanda_data.refresh(at - pd.Timedelta(days=3), spec.bars_path, instrument=spec.oanda))
     if trigger is None:               # a slot: the calendar changes slowly and 4 reads a day is plenty
         try:
-            print("calendar: new events", news.refresh_calendar())
+            from . import news_v31
+            print("calendar: new events (events.csv, events_v31.csv)", news_v31.refresh_calendars())
         except Exception as e:
             print(f"calendar refresh failed: {e}")
     m1 = load_m1(instrument=spec.oanda)
-    live = v31_live(at, oanda, bars)
+    live = v31_live(at, oanda, bars, cross)
     macro_df = macro_data.macro_frame(at.to_pydatetime())
     client = L.from_env()
     if client is None:
@@ -169,10 +171,11 @@ def cmd_watch_v31(args):
         return seen["bars"]
 
     def extra():
-        return watcher.cross_triggers(cross_bars(oanda), watcher.WATCH_V31, now)
+        seen["cross"] = cross_bars(oanda)
+        return watcher.cross_triggers(seen["cross"], watcher.WATCH_V31, now)
 
     def wake(trigger, at):
-        v31_desk_wake(trigger, at, oanda, seen.get("bars"), args.journal)
+        v31_desk_wake(trigger, at, oanda, seen.get("bars"), args.journal, seen.get("cross"))
 
     print(now, watcher.tick(now, fetch, wake, desk_v31.WATCH_STATE, desk_v31.WATCH_LOG, watcher.WATCH_V31, window=cal.desk_window,
                             thin_sleeps=False, extra=extra))
