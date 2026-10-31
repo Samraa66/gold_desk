@@ -1,0 +1,10 @@
+[Unit]
+Description=Gold desk v3 watcher every 5 minutes, one minute after each M5 bar closes
+
+[Timer]
+OnCalendar=*-*-* *:01/5:00 UTC
+Persistent=false
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

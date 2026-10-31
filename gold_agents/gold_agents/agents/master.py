@@ -54,7 +54,7 @@ def decide(ctx: Context, reports: dict, plans: dict, blocked: dict, llm=None) ->
         return "PASS", "risk: " + "; ".join(f"{k}: {v}" for k, v in blocked.items()), None, "rules"
     facts = {"price": round(ctx.price, I.of(cfg).dp), "as_of": str(ctx.as_of), "reports": {k: _brief(v) for k, v in reports.items()}}
     system = localise(f"{DESK}\nYour role: {ROLE}\nJSON schema: {SCHEMA}", cfg)
-    reply = llm.complete_json(model=cfg.deep_model, system=system, user="FACTS:\n" + json.dumps(facts, indent=1, default=str),
+    reply = llm.complete_json(model=cfg.deep_model, agent="master", system=system, user="FACTS:\n" + json.dumps(facts, indent=1, default=str),
                               max_tokens=cfg.max_tokens)
     decision = str(reply.get("decision", "PASS")).upper()
     conf = clamp(reply.get("confidence", 0.0), 0.0, 1.0)

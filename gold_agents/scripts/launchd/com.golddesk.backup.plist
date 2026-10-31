@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Nightly copy of the VPS journal (calls, prompts, frozen outcomes, dashboards, cycle.log) to ~/gold_desk_live/journal/.
+     Calls rsync directly: launchd may not run scripts from ~/Documents. No delete flag, so the Mac copy survives the server.
+     Install: cp to ~/Library/LaunchAgents/ and `launchctl load` it. Missed runs (Mac asleep) fire on wake. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.golddesk.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/rsync</string>
+    <string>-a</string>
+    <string>-e</string>
+    <string>/usr/bin/ssh -i /Users/sameerkaram/.ssh/telegram_bot_vps -o BatchMode=yes -o ConnectTimeout=20</string>
+    <string>root@138.68.188.28:/home/golddesk/gold_desk/gold_agents/journal/</string>
+    <string>/Users/sameerkaram/gold_desk_live/journal/</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/sameerkaram/gold_desk_live/backup.log</string>
+  <key>StandardErrorPath</key><string>/Users/sameerkaram/gold_desk_live/backup.log</string>
+</dict>
+</plist>

@@ -147,7 +147,7 @@ def chart_run(ctx: Context, v2: V2, llm=None) -> Report:
         return rep
     system = localise(f"{DESK}\nYour role: {ROLE.format(min_rr=v2.min_rr, min_stop=v2.min_stop_atr_h1, post_event=v2.post_event_hours)}\nJSON schema: {SCHEMA}", ctx.cfg)
     user = f"AS OF {ctx.as_of:%Y-%m-%d %H:%M} UTC ({ctx.as_of:%A})\nSTRUCTURE:\n{json.dumps(st, indent=1, default=str)}\n\nCANDLES (closed bars only):\n{candles}"
-    reply = llm.complete_json(model=ctx.cfg.deep_model, system=system, user=user, max_tokens=v2.chart_max_tokens)
+    reply = llm.complete_json(model=ctx.cfg.deep_model, agent="chart", system=system, user=user, max_tokens=v2.chart_max_tokens)
     s = reply.get("setup") or {}
     setup = {"direction": s.get("direction"), "entry_type": str(s.get("entry_type") or "none").lower(), "entry": s.get("entry"),
              "stop": s.get("stop"), "tp1": s.get("tp1"), "tp2": s.get("tp2"),
@@ -280,7 +280,7 @@ def master_decide(ctx: Context, reports: dict, plan: dict | None, why_not: str |
              "macro": {"score": mac.score, "confidence": mac.confidence, "summary": mac.summary},
              "liquidity": {"summary": liq.summary, "next_events_48h": liq.facts.get("next_events_48h")}}
     system = localise(f"{DESK}\nYour role: {MASTER_ROLE}\nJSON schema: {MASTER_SCHEMA}", cfg)
-    reply = llm.complete_json(model=cfg.deep_model, system=system, user="FACTS:\n" + json.dumps(facts, indent=1, default=str),
+    reply = llm.complete_json(model=cfg.deep_model, agent="master", system=system, user="FACTS:\n" + json.dumps(facts, indent=1, default=str),
                               max_tokens=cfg.max_tokens)
     why = str(reply.get("reason", ""))[:700]
     conf = clamp(reply.get("confidence", 0.0), 0.0, 1.0)

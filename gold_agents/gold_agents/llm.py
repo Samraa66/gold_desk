@@ -11,7 +11,25 @@ from typing import Protocol
 
 
 class LLM(Protocol):
-    def complete_json(self, *, model: str, system: str, user: str, max_tokens: int) -> dict: ...
+    def complete_json(self, *, model: str, system: str, user: str, max_tokens: int, agent: str = "") -> dict: ...
+
+
+# USD per million tokens (input, output), Anthropic list prices as of 2026-10. Recording only: no decision reads them.
+PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0)}
+
+
+def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float | None:
+    if model not in PRICES:
+        return None
+    pin, pout = PRICES[model]
+    return (input_tokens * pin + output_tokens * pout) / 1e6
+
+
+def usage(records: list[dict]) -> dict:
+    """One run's model calls summed: stored on the call so the scorecard can show what a slot cost."""
+    return {"calls": len(records), "input_tokens": sum(r["input_tokens"] for r in records),
+            "output_tokens": sum(r["output_tokens"] for r in records),
+            "cost_usd": round(sum(r["cost_usd"] or 0.0 for r in records), 6)}
 
 
 def parse_json(text: str) -> dict:
@@ -30,20 +48,22 @@ def parse_json(text: str) -> dict:
 
 
 class AnthropicLLM:
-    def __init__(self, api_key: str | None = None):
-        import anthropic
-        self._client = anthropic.Anthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
-        self.calls = 0
-        self.input_tokens = 0
-        self.output_tokens = 0
+    """Keeps every call (prompt, raw reply, tokens, cost) in `records`; the runner saves them next to the call log."""
+    def __init__(self, api_key: str | None = None, client=None):
+        if client is None:
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
+        self._client = client
+        self.records: list[dict] = []
 
-    def complete_json(self, *, model: str, system: str, user: str, max_tokens: int) -> dict:
+    def complete_json(self, *, model: str, system: str, user: str, max_tokens: int, agent: str = "") -> dict:
         msg = self._client.messages.create(model=model, max_tokens=max_tokens, system=system,
                                            messages=[{"role": "user", "content": user}])
-        self.calls += 1
-        self.input_tokens += msg.usage.input_tokens
-        self.output_tokens += msg.usage.output_tokens
-        return parse_json("".join(b.text for b in msg.content if getattr(b, "type", "") == "text"))
+        text = "".join(b.text for b in msg.content if getattr(b, "type", "") == "text")
+        tin, tout = msg.usage.input_tokens, msg.usage.output_tokens
+        self.records.append({"agent": agent, "model": model, "system": system, "user": user, "reply": text,
+                             "input_tokens": tin, "output_tokens": tout, "cost_usd": cost_usd(model, tin, tout)})
+        return parse_json(text)
 
 
 class FakeLLM:
@@ -53,8 +73,8 @@ class FakeLLM:
         self.default = default
         self.calls: list[dict] = []
 
-    def complete_json(self, *, model: str, system: str, user: str, max_tokens: int) -> dict:
-        self.calls.append({"model": model, "system": system, "user": user})
+    def complete_json(self, *, model: str, system: str, user: str, max_tokens: int, agent: str = "") -> dict:
+        self.calls.append({"model": model, "system": system, "user": user, "agent": agent})
         for marker, reply in self.replies.items():
             if marker in system:
                 return reply

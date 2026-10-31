@@ -80,6 +80,6 @@ def run(ctx: Context, llm=None) -> Report:
                     summary=f"rules heuristic: dollar and yield moves lean {'bullish' if score > 0 else 'bearish' if score < 0 else 'neutral'} for {I.of(ctx.cfg).label}",
                     facts=f)
     if llm is not None:
-        refine(report, ask(llm, ctx.cfg.quick_model, ROLE, SCHEMA, {**f, "rule_score": round(score, 3)}, ctx.cfg.max_tokens, ctx.cfg),
+        refine(report, ask(llm, ctx.cfg.quick_model, ROLE, SCHEMA, {**f, "rule_score": round(score, 3)}, ctx.cfg.max_tokens, ctx.cfg, agent="macro"),
                ctx.cfg.quick_model)
     return report

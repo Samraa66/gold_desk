@@ -30,11 +30,12 @@ gold_agents/            package (python -m gold_agents ...)
   calendar.py           FOMC + NFP built in, events.csv for the rest, market hours
   macro_data.py         Yahoo (and optional FRED) daily closes, cached in data/macro/
   agents/               chart, macro, liquidity, risk, master
+  desk_v2.py desk_v3.py structure.py watcher.py news.py live_data.py   later desks and what they read
   journal.py            append-only call log + conservative scorer + baselines
   runner.py llm.py notify.py __main__.py
 journal/calls.jsonl     THE forward log (committed, append-only). replay_calls.jsonl is a plumbing artefact, not evidence
 scripts/run_cycle.sh    refresh MT5 bars -> make a call -> log -> score (unverified end to end, see below)
-tests/                  45 offline tests (no network, no key, no MT5)
+tests/                  offline tests (no network, no key, no MT5)
 ```
 
 ## Setup and use
@@ -97,6 +98,66 @@ a row, no BUY after 2 falling M5 highs, neither in a squeeze (`structure.short_t
 to confirm). A setup they refuse is still scored (`rejected_setup`, with the reason), so the record shows whether they help.
 Replayed on that evening's bars: the post-event rule refuses the trade; the rising-lows rule would only have seen it ~10 min later.
 
+## Desk v3: gold only, woken by the market, reads the news (2026-10-30)
+On 2026-10-30 gold fell $135. v2 leaned bearish at 06:00 and 10:00 UTC and proposed nothing ("no mapped zone beneath it for a
+target"), the break came between its slots, and its one setup arrived at 14:00, $52 above price. Its shadow record the same week:
+6 chart setups the desk passed on, 5 wins, 1 unfilled, +8.97R over two correlated days, across four pairs. That is a reason to
+build a new version, not evidence. The owner chose gold alone, fast trades instead of $50 swings, and a $1,000 demo as the sizing.
+
+v3 (`gold_agents/desk_v3.py`, `--desk v3`, hash `desk_v3.v3_hash`, log `journal/calls_v3.jsonl`, dashboard `dashboard_v3.html`):
+1. **Move watcher** (`watcher.py`, `scripts/watch_cycle.sh`, `golddesk-watch.timer`, every 5 min). Rules only, no model cost on a quiet
+   tick: a close beyond the 3 h range, a close through a named level (prior day, today, Asia, round $50), a wick through a level
+   that closes back (sweep), a bar 2.5x normal. A level counts only when crossed by a quarter of a normal M5 bar. Asia-only hours
+   do not spend wakes. 30 min cooldown per trigger and side, 30 model wakes a day at most, plus the 4 slots. Simulated on 10-20 to 10-30
+   bars before go-live (plumbing, not evidence): a cap of 16 ran out as early as 12:11 UTC, before New York, so the cap is 30.
+   Every trigger is logged to `journal/watch_v3.jsonl`, woken or not. A trigger is a reason to look, never a reason to trade.
+2. **Fast trades.** Stop $5-15, at least 1x M5 ATR; TP1 at least 1.5R, at a level or plain R-based when nothing is mapped; orders
+   valid up to 2 h, near price; a trade closes by 6 h. 1.5% of $1,000 = $15 risk, 0.01 lot on the widest stop. Same-side
+   cooldown 1 h, daily loss limit 3R, two open calls.
+3. **Agents reading different things.** News (`news.py`: Google News RSS, published before the as-of only, Sonnet). Cross-asset (`live_data.py`:
+   dollar, 10-year bond price, S&P, oil, silver over 1 h and 4 h, plus v1's daily macro). Liquidity for the chart agent: OANDA's order
+   and position books (its own clients, not the market), session levels, equal highs/lows, tick volume against normal. The chart agent
+   sees no news, so agreement between agents still means something.
+4. **Master bar 0.50**, set before any v3 result. It is informed by two days of v2, which is exactly why only v3's own forward log
+   can judge it. Vetoes, the post-event rule and the no-fade rules are v2's, in code.
+5. **Honest fills.** `fill_from` on the call: scored from the first full minute after the model finished, not from the trigger.
+
+`rules_setup` is the baseline the model must beat: trade a directional trigger at market unless H1 structure opposes it, stop
+1.5x M5 ATR, TP1 1.5R. `chart_setup` and `rejected_setup` are shadows as in v2. Same pass bar as below, with `rules_setup` in
+place of `trend_h4` for criterion 3. v2 gold is the control and keeps running untouched.
+
+**Known risks, stated before the first result.** Cost: 0.90 of assumed spread and slippage is 0.18R on a $5 stop and 0.06R on $15, so
+tight trades carry a real handicap, and spreads widen on exactly the bars that trigger. Noise: a $15 stop is under one H1 ATR on
+a day like 10-30 (ATR $18); v2 forbade that (`min_stop_atr_h1`), v3 allows it because fast trades were the owner's call. Trades 5 minutes apart
+are not independent, so more calls do not automatically mean more evidence (see the power note).
+
+**Calendar.** `python -m gold_agents events`, and every v3 slot, fills `events.csv` with high-impact US releases from the Forex
+Factory weekly feed. It did not exist on the server before, so CPI and PPI were invisible. v1 and v2 read the same file: no number
+changed, so no hash moved, but both now also block those releases once it exists.
+
+**v1 and v2 stopped 2026-10-30 (owner's decision: gold only, one desk).** `golddesk.timer` is disabled, so silver, EUR and GBP and the v2 gold
+control have stopped, and with them the slot digest and the v2 scorecard. Their logs and code stay; the Telelytics page keeps showing their last
+state. v2's last gold call (SELL limit 3972, 14:00 slot) was never rescored by a cycle: `--desk v2 score` still works while bars exist. To restart:
+`systemctl enable --now golddesk.timer`. v3's comparison is `rules_setup` in its own log. Only `golddesk-watch.timer` runs now.
+
+## Keeping everything (2026-10-29)
+The owner asked that every slot, PASS included, leave enough behind to judge it later and improve the model. Recording
+only: no decision changed, so no hash moved.
+- **Every model call, word for word**, in `journal/prompts_v2*.jsonl` (and `prompts*.jsonl` for v1): call id, agent
+  (chart, macro, master), model, full system prompt, full user prompt (candles + structure), raw reply, tokens and dollar cost
+  (`llm.PRICES`, list prices 2026-10). Named so they never match `calls*`, which the Telelytics page reads.
+- **Each call's cost** as `usage` on the call itself; the 18:00 scorecard shows the day's model spend per instrument and in total.
+- **Frozen outcomes** in `journal/outcomes_v2*.jsonl`: written once by `score` when every strategy on the call is final
+  (win, loss, expired, unfilled) and, for a PASS, its 24 h window has closed. Scores are otherwise recomputed from bars,
+  which the server trims to ~200 days.
+- **v1's model run stopped**; its free rules run continues as the comparison. v1's model log ends at the 2026-10-29 14:00 slot.
+- **Backup**: `scripts/pull_dashboard.sh` also copies prompts and outcomes; `scripts/launchd/com.golddesk.backup.plist` copies the
+  whole server journal nightly to `~/gold_desk_live/journal/` once installed in `~/Library/LaunchAgents/`.
+
+Why the prompts matter: the model's training ends before these dates, so a changed prompt could be re-run on the saved inputs
+without the model knowing how the day ended. Whether such a replay counts as evidence is the owner's call; until then the rule
+above stands (replays are plumbing checks).
+
 ## Rules fixed before any live result (2026-10-21)
 Costs: spread 0.60 + slippage 0.30 in the scorer (the demo's real median is ~0.21; the conservative figure stays until
 the user's real broker demo is measured). A win exits at TP1; stop beats target inside one bar; unresolved after 48 h
@@ -138,7 +199,7 @@ it as a minimum before looking at anything, not as proof. Coin-flip entries also
   at zero cost 25-30%.
 - The expected value of this project sits in the macro/model layer, which has not run yet.
 
-## Scheduler (moved to the VPS 2026-10-22)
+## Scheduler (moved to the VPS 2026-10-22; since 2026-10-30 only v3's `golddesk-watch.timer` runs, see Desk v3)
 Runs on the VPS as its own user: systemd timer `golddesk.timer` (weekdays 06:02, 10:02, 14:02, 18:02 UTC) runs
 `scripts/scheduled_cycle.sh` in `/home/golddesk/gold_desk/gold_agents` (own venv, own `.env`, 450 MB memory cap, low priority).
 It touches nothing of the product. **The LIVE log and dashboard are on the server** (`journal/calls.jsonl`, `dashboard.html`,

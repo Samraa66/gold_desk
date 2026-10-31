@@ -50,6 +50,6 @@ def run(ctx: Context, llm=None) -> Report:
                     summary=f"rules: {lean} (score {score:+.2f}); H4 trend {f['h4_trend']:+d}, H1 trend {f['h1_trend']:+d}",
                     facts={**f, "raw_rules_score": round(score, 3)})
     if llm is not None:
-        refine(report, ask(llm, ctx.cfg.quick_model, ROLE, SCHEMA, {**f, "rule_score": round(score, 3)}, ctx.cfg.max_tokens, ctx.cfg),
+        refine(report, ask(llm, ctx.cfg.quick_model, ROLE, SCHEMA, {**f, "rule_score": round(score, 3)}, ctx.cfg.max_tokens, ctx.cfg, agent="chart"),
                ctx.cfg.quick_model)
     return report

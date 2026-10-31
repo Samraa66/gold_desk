@@ -112,6 +112,40 @@ def summary(tf: dict, price: float, lookback_days: int = 60, dp: int = 2, m5: pd
     }
 
 
+def key_levels(m5: pd.DataFrame, round_step: float = 50.0) -> list[dict]:
+    """The levels fast traders and their stops sit at (desk v3): prior day, today and the Asia session high and low, and
+    the round numbers either side of price. The last bar is left out: it is the bar being judged, not a level."""
+    if len(m5) < 2:
+        return []
+    last, hist = m5.iloc[-1], m5.iloc[:-1]
+    days = hist.index.normalize()
+    day = m5.index[-1].normalize()
+    today, before = hist[days == day], hist[days < day]
+    out = []
+
+    def pair(name, b):
+        if len(b):
+            out.extend([{"name": f"{name}_high", "price": float(b["high"].max())}, {"name": f"{name}_low", "price": float(b["low"].min())}])
+
+    if len(before):
+        pair("prior_day", before[before.index.normalize() == before.index[-1].normalize()])
+    pair("today", today)
+    pair("asia", today[today.index.hour < 6])
+    below = float(last["close"] // round_step * round_step)
+    out.extend([{"name": "round_below", "price": below}, {"name": "round_above", "price": below + round_step}])
+    return out
+
+
+def equal_levels(sw: list[dict], tol: float, dp: int = 2) -> list[dict]:
+    """Swing highs (lows) at nearly the same price: resting stops collect behind them, so a run through them is a
+    move worth expecting. Two touches or more."""
+    out = []
+    for kind, name in (("L", "equal_lows"), ("H", "equal_highs")):
+        for z in zones([s for s in sw if s["kind"] == kind], tol, 0.0, min_touches=2, dp=dp) if tol else []:
+            out.append({"kind": name, "price": round((z["lo"] + z["hi"]) / 2, dp), "touches": z["touches"]})
+    return out
+
+
 def bars_text(bars: pd.DataFrame, n: int, dp: int = 2) -> str:
     """The last `n` closed bars as compact lines: time open high low close."""
     rows = [f"{t:%m-%d %H:%M} {r.open:.{dp}f} {r.high:.{dp}f} {r.low:.{dp}f} {r.close:.{dp}f}"

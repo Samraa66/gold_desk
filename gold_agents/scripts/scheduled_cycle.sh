@@ -11,6 +11,9 @@ if [ -z "${GOLD_NO_GATE:-}" ]; then
   case "$HOUR" in 06|10|14|18) ;; *) exit 0 ;; esac
   [ "$DOW" -le 5 ] || exit 0
 fi
+# The watcher (scripts/watch_cycle.sh) rewrites the same bar files: one at a time. Wait for it, a wake takes a minute or two.
+exec 9>journal/.bars.lock
+flock -w 280 9 || echo "bar lock busy after 280s; going on"
 AS_OF="$(date -u +%Y-%m-%dT%H:00:00Z)"
 FAILED=""
 step() { name="$1"; shift; "$@" || { echo "STEP FAILED: $name"; FAILED="$FAILED $name"; return 1; }; }
@@ -21,9 +24,9 @@ INSTRUMENTS="${GOLD_INSTRUMENTS:-XAU_USD XAG_USD EUR_USD GBP_USD}"
   for INST in $INSTRUMENTS; do
     echo "--- $INST"
     if step "bars-$INST" .venv/bin/python -m gold_agents.oanda_data auto "$INST"; then
-      # v1: the original record, logged silently since 2026-10-28 (its WATCH leans went 0 for 16; v2 sends the messages)
+      # v1: the original record, logged silently since 2026-10-28 (its WATCH leans went 0 for 16; v2 sends the messages).
+      # Its model run stopped 2026-10-29 (credits for a record nobody reads); the free rules run stays as the comparison.
       step "rules-$INST" .venv/bin/python -m gold_agents --instrument "$INST" run --as-of "$AS_OF" --rules-only
-      step "model-$INST" .venv/bin/python -m gold_agents --instrument "$INST" run --as-of "$AS_OF" --llm
       step "score-$INST" .venv/bin/python -m gold_agents --instrument "$INST" score
       step "dashboard-$INST" .venv/bin/python -m gold_agents --instrument "$INST" dashboard
       # v2 (2026-10-28): reads the candles + structure, calls setups at levels. Only the model's call is sent to Telegram.

@@ -82,6 +82,7 @@ def scorecard(day: str, instruments: list[str], loader=None) -> str:
     loader = loader or (lambda name: load_m1(instrument=name))
     d0 = pd.Timestamp(day, tz="UTC").normalize()
     out = [f"Desk v2 scorecard · {d0:%a %d %b} (UTC)"]
+    spend_total = 0.0
     for name in instruments:
         spec = I.get(name)
         entries = [e for e in J.load(desk_v2.journal_path(spec)) if e["mode"] == "llm"]
@@ -113,6 +114,11 @@ def scorecard(day: str, instruments: list[str], loader=None) -> str:
             big = [e for e in judged if abs(e["after"]["net_atr"]) >= 3]
             moves = ", ".join(f"{e['as_of'][11:16]} {e['after']['net_atr']:+.1f}ATR" for e in big)
             block.append(f"  yesterday's {len(judged)} passes, 24h on: {len(judged) - len(big)} quiet" + (f", big move after {len(big)} ({moves})" if big else ""))
+        spent = [e["usage"] for e in today if e.get("usage")]
+        if spent:
+            cost = sum(u["cost_usd"] for u in spent)
+            spend_total += cost
+            block.append(f"  model spend today ${cost:.2f} ({sum(u['calls'] for u in spent)} model calls)")
         s = J.summarize(scored)
         block.append(f"  all v2 calls: {_stats(s.get('master'))}")
         if s.get("chart_setup"):
@@ -120,6 +126,8 @@ def scorecard(day: str, instruments: list[str], loader=None) -> str:
         if s.get("rules_setup"):
             block.append(f"  rules setups: {_stats(s['rules_setup'])}")
         out.extend(block)
+    if spend_total:
+        out.append(f"\nModel spend today, all instruments: ${spend_total:.2f}")
     out.append("\nNothing is judged under 30 resolved calls. R is after assumed costs.")
     return _fit("\n".join(out))
 

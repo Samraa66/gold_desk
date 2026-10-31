@@ -38,6 +38,45 @@ def load(path: Path = JOURNAL) -> list[dict]:
     return [json.loads(line) for line in Path(path).read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def sidecar(journal: Path, kind: str) -> Path:
+    """calls_v2_eurusd.jsonl -> <kind>_v2_eurusd.jsonl beside it. Never named calls*: the Telelytics page reads those."""
+    journal = Path(journal)
+    return journal.with_name(kind + journal.name.removeprefix("calls"))
+
+
+def _append_lines(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, default=str) + "\n")
+
+
+def save_prompts(call: dict, records: list[dict], journal: Path) -> None:
+    """Every model call behind a logged call, word for word: prompt, raw reply, tokens, cost (2026-10-29)."""
+    _append_lines(sidecar(journal, "prompts"), [{"call_id": call["id"], "as_of": call["as_of"], **r} for r in records])
+
+
+FINAL = ("win", "loss", "expired", "unfilled")
+
+
+def freeze_outcomes(scored: list[dict], journal: Path) -> int:
+    """Write each scored entry's outcome once it can no longer change: every strategy closed, and for a PASS the 24 h
+    after it over. Scores are otherwise recomputed from bars, which the server trims to ~200 days; this keeps them."""
+    path = sidecar(journal, "outcomes")
+    have = {r["id"] for r in load(path)}
+    rows = []
+    for e in scored:
+        if e["id"] in have or any(s.get("outcome") not in FINAL for s in e["scores"].values()):
+            continue
+        if e["decision"] == "PASS" and not (e.get("after") and e["after"].get("net_atr") is not None):
+            continue
+        rows.append({"id": e["id"], "as_of": e["as_of"], "mode": e["mode"], "instrument": e.get("instrument"),
+                     "decision": e["decision"], "scores": e["scores"], "after": e.get("after"),
+                     "frozen_at": pd.Timestamp.now(tz="UTC").isoformat()})
+    _append_lines(path, rows)
+    return len(rows)
+
+
 def score_plan(direction: str, plan: dict, as_of: pd.Timestamp, bars: pd.DataFrame, cfg: Config, now: pd.Timestamp) -> dict:
     """Score one plan on minute bars. `bars` may include anything; only bars from `as_of` up to `now` are used."""
     long = direction == "BUY"
@@ -135,7 +174,8 @@ def score_entries(entries: list[dict], m1: pd.DataFrame, cfg: Config, now: pd.Ti
     """Attach `scores` = {strategy: result} to each entry. Strategies: master (its call) and the baselines."""
     out = []
     for e in entries:
-        as_of = pd.Timestamp(e["as_of"])
+        # A v3 call is scored from when the model finished (`fill_from`): the bars before that could not have been traded.
+        as_of = pd.Timestamp(e.get("fill_from") or e["as_of"])
         strategies = {}
         if e["decision"] in ("BUY", "SELL") and e.get("plan"):
             strategies["master"] = score_plan(e["decision"], e["plan"], as_of, m1, cfg, now)

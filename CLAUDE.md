@@ -10,15 +10,15 @@ Research project, not a product. Read `gold_agents/README.md` before changing an
 ## Commands (from `gold_agents/`)
 ```bash
 .venv/bin/python -m pytest -q                                   # offline tests
-.venv/bin/python -m gold_agents --desk v2 run --dry --llm       # one call, written nowhere
-.venv/bin/python -m gold_agents --desk v2 --instrument XAU_USD score
+.venv/bin/python -m gold_agents --desk v3 run --dry --llm       # one call, written nowhere
+.venv/bin/python -m gold_agents --desk v3 score
 scripts/deploy_vps.sh                                           # code only; never touches the server's journal, .env or bars
 scripts/pull_dashboard.sh                                       # copy the LIVE logs and dashboards to ~/gold_desk_live
 ```
 Score on the VPS, not locally: local bars for silver/EUR/GBP go stale and every call reads "pending".
 
 ## Where it runs
-VPS 138.68.188.28 (shared with the Telelytics product, `ssh -i ~/.ssh/telegram_bot_vps root@138.68.188.28`). The desk lives at `/home/golddesk/gold_desk/{gold_agents,gold_bot}` as the unprivileged user `golddesk`, systemd `golddesk.timer` (weekdays 06/10/14/18 UTC). Never touch `/root/telegram-lead-bot` or the `telegrambot` service from this project.
+VPS 138.68.188.28 (shared with the Telelytics product, `ssh -i ~/.ssh/telegram_bot_vps root@138.68.188.28`). The desk lives at `/home/golddesk/gold_desk/{gold_agents,gold_bot}` as the unprivileged user `golddesk`, systemd `golddesk-watch.timer` (desk v3, every 5 min; gold only). `golddesk.timer` (v1, v2) was disabled 2026-10-30. Never touch `/root/telegram-lead-bot` or the `telegrambot` service from this project.
 
 The one link to Telelytics: its developer-only page `telelytics.org/admin/gold-desk` (`backend/app/gold_desk_routes.py` in that repo) reads `/home/golddesk/gold_desk/gold_agents/journal/` (dashboards and `calls*.jsonl`). Renaming those files or that folder breaks the page.
 

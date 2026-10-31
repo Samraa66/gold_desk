@@ -22,10 +22,10 @@ def clamp(x: float, lo: float = -1.0, hi: float = 1.0) -> float:
     return max(lo, min(hi, float(x)))
 
 
-def ask(llm, model: str, role: str, schema: str, facts: dict, max_tokens: int, cfg=None) -> dict:
+def ask(llm, model: str, role: str, schema: str, facts: dict, max_tokens: int, cfg=None, agent: str = "") -> dict:
     system = localise(f"{DESK}\nYour role: {role}\nJSON schema: {schema}", cfg) if cfg is not None else f"{DESK}\nYour role: {role}\nJSON schema: {schema}"
     user = "FACTS:\n" + json.dumps(facts, indent=1, default=str)
-    return llm.complete_json(model=model, system=system, user=user, max_tokens=max_tokens)
+    return llm.complete_json(model=model, system=system, user=user, max_tokens=max_tokens, agent=agent)
 
 
 def refine(report: Report, reply: dict, model: str) -> Report:
