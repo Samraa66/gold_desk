@@ -134,7 +134,7 @@ def v31_desk_wake(trigger, at: pd.Timestamp, oanda=None, bars=None, journal: Pat
     client = L.from_env()
     if client is None:
         print("no ANTHROPIC_API_KEY: rules only")
-    calls = v31_wake(trigger, at, client, m1, macro_df, live, journal)
+    calls = v31_wake(trigger, at, client, m1, macro_df, live, journal, brief=desk_v31.current_brief(at))
     print(*[f"{c['mode']}: {c['decision']} ({c['reason'][:120]})" for c in calls], sep="\n")
     cfg = desk_v31.config()
     scored = J.score_entries(J.load(journal), m1, cfg, m1.index[-1] + pd.Timedelta(minutes=1))
@@ -158,6 +158,29 @@ def cross_bars(oanda) -> dict:
     return out
 
 
+def v31_brief(now: pd.Timestamp, oanda=None, journal: Path | None = None, llm=None, send=notify.send) -> dict | None:
+    """The daily brief, from the watcher's tick: before London and after each listed release (`brief.reason`). Fetches and
+    calls the model only when one is due; no key means no brief and no message."""
+    from . import brief, live_data, oanda_data
+    journal = journal or desk_v31.JOURNAL
+    events = desk_v31.default_events(now)
+    if not brief.due(now, brief.latest(desk_v31.BRIEF_LOG), events):
+        return None
+    llm = llm if llm is not None else L.from_env()
+
+    def facts():
+        spec = I.get("XAU_USD")
+        o = oanda or live_data.Oanda()
+        print(oanda_data.refresh(now - pd.Timedelta(days=3), spec.bars_path, instrument=spec.oanda))
+        m1 = load_m1(instrument=spec.oanda)
+        return desk_v31.brief_facts_at(m1, now, desk_v31.config(), v31_live(now, o), J.load(journal), events)
+
+    b = brief.step(now, llm, facts, events, desk_v31.BRIEF_LOG, send, records_to=journal)
+    if b:
+        print(f"brief written ({b['why']})")
+    return b
+
+
 def cmd_watch_v31(args):
     """One 5-minute look at gold and the other markets, Sunday's reopen to Friday's close in New York time."""
     from . import calendar as cal
@@ -165,6 +188,10 @@ def cmd_watch_v31(args):
     now = pd.Timestamp(datetime.now(timezone.utc)).floor("min")
     oanda = live_data.Oanda()
     seen = {}
+    try:                              # the brief never stops the tick
+        v31_brief(now, oanda, args.journal)
+    except Exception as e:
+        print(f"brief failed: {e}")
 
     def fetch():
         seen["bars"] = oanda.m5()

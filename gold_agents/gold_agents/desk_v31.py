@@ -457,3 +457,45 @@ def card(call: dict) -> str:
 def day_text(scored: list[dict], day: str, wakes: int = 0) -> str:
     """The end-of-day line for Telegram: v3's, labelled v3.1."""
     return V3.day_text(scored, day, wakes).replace("Gold v3 ", "Gold v3.1 ", 1)
+
+
+# ---------------------------------------------------------------- the daily brief's facts
+BRIEF_MAX_AGE = pd.Timedelta(hours=24)       # an older brief is not shown to the desk
+
+
+def current_brief(as_of: pd.Timestamp, path=None) -> dict | None:
+    """The latest brief if it is under a day old, else None."""
+    from . import brief as B
+    b = B.latest(path or BRIEF_LOG)
+    if b and pd.Timestamp(b["at"]) <= as_of and as_of - pd.Timestamp(b["at"]) < BRIEF_MAX_AGE:
+        return b
+    return None
+
+
+def open_call(scored: list[dict]) -> dict | None:
+    """The model desk's most recent call still open or waiting to fill, for the brief's last line."""
+    live = [e for e in scored if e["decision"] in ("BUY", "SELL") and (e["scores"].get("master") or {}).get("outcome") in OPEN]
+    return max(live, key=lambda e: e["as_of"]) if live else None
+
+
+def brief_facts_at(m1_all: pd.DataFrame, as_of: pd.Timestamp, cfg: Config, live: dict, prior: list[dict],
+                   events: list[dict] | None = None) -> dict:
+    """What the brief is written from: the move and structure (as the chart sees them, without candles), the news, other markets,
+    real yield, positioning, the next day's calendar, and the desk's current call. Closed bars only."""
+    from . import structure as S
+    state, scored = state_for(prior, "llm", m1_all, as_of, cfg)
+    ctx = build_context(m1_all, as_of, cfg, None, default_events(as_of) if events is None else events, state)
+    m5 = V3.m5_bars(ctx)
+    st = S.summary(ctx.tf, ctx.price, V31_DEFAULT.lookback_days, I.of(cfg).dp, m5=m5)
+    t = as_of.to_pydatetime()
+    return {"as_of": str(as_of), "price": round(ctx.price, 2),
+            "move": moves.current(ctx.tf, as_of, F.atr(ctx.tf["D1"]), scored),
+            "structure": {k: st[k] for k in ("atr", "h4_pattern", "h1_pattern", "d1_pattern", "nearest_support", "nearest_resistance",
+                                             "zones_nearest")},
+            "key_levels": [{"name": x["name"], "price": round(x["price"], 2)} for x in S.key_levels(m5)],
+            "headlines": (live.get("news") or [])[:12], "headline_lag_min": live.get("headline_lag_min", "unavailable"),
+            "other_markets": live.get("cross") or "unavailable", "real_yield": live.get("real_yield", "unavailable"),
+            "cot": live.get("cot", "unavailable"), "etf_flows": live.get("etf_flows", "unavailable"),
+            "calendar_24h": [{"time_utc": str(e["time"])[:16], "in_hours": round((e["time"] - t).total_seconds() / 3600, 1),
+                              "name": e["name"], "impact": e["impact"]} for e in cal.next_events(t, 24, ctx.events)],
+            "open_call": open_call(scored)}
