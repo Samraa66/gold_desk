@@ -77,6 +77,39 @@ def freeze_outcomes(scored: list[dict], journal: Path) -> int:
     return len(rows)
 
 
+def _holds(plan: dict) -> bool:
+    """Desk v3.1 plans carry their own holding time and a Friday close; older plans have neither and score exactly as before."""
+    return "max_hold_hours" in plan or "flat_by" in plan
+
+
+def _expiry(plan: dict, start: pd.Timestamp, cfg: Config) -> pd.Timestamp:
+    """When an open trade is marked to market: `start` + the plan's `max_hold_hours` (else `cfg.expiry_hours`), never after
+    `flat_by`. A missing, zero, negative or non-numeric hold falls back to the config, so a bad plan can not crash the scorer."""
+    try:
+        hours = float(plan.get("max_hold_hours"))
+        if not 0 < hours < float("inf"):
+            raise ValueError
+    except (TypeError, ValueError):
+        hours = cfg.expiry_hours
+    expiry = start + pd.Timedelta(hours=hours)
+    if plan.get("flat_by"):
+        expiry = min(expiry, pd.Timestamp(plan["flat_by"]))
+    return expiry
+
+
+def _expire(long: bool, plan: dict, idx, op, cl, n_live: int, expiry: pd.Timestamp, now: pd.Timestamp, spread: float):
+    """-> (exit price, closed_at) once `expiry` has passed, or None while the trade is still live.
+    Old plans: the open of the first bar at or after expiry (unchanged). v3.1 plans: when expiry falls in a market gap (the
+    weekend, the daily break, or no bar yet), the close of the last bar before it, so a Friday trade is never marked at Sunday's
+    open."""
+    if n_live < len(idx) and not (_holds(plan) and idx[n_live] > expiry):
+        return (op[n_live] if long else op[n_live] + spread), str(idx[n_live])
+    if _holds(plan) and n_live > 0 and (n_live < len(idx) or now >= expiry):
+        px = cl[n_live - 1]
+        return (px if long else px + spread), str(idx[n_live - 1] + pd.Timedelta(minutes=1))
+    return None
+
+
 def score_plan(direction: str, plan: dict, as_of: pd.Timestamp, bars: pd.DataFrame, cfg: Config, now: pd.Timestamp) -> dict:
     """Score one plan on minute bars. `bars` may include anything; only bars from `as_of` up to `now` are used."""
     long = direction == "BUY"
@@ -88,9 +121,11 @@ def score_plan(direction: str, plan: dict, as_of: pd.Timestamp, bars: pd.DataFra
         return {"outcome": "pending", "r": None}
     if plan.get("entry_type", "market") != "market":
         return _score_pending(long, plan, as_of, window, cfg, now)
-    expiry = as_of + pd.Timedelta(hours=cfg.expiry_hours)
     idx = window.index
-    op, hi, lo = window["open"].to_numpy(), window["high"].to_numpy(), window["low"].to_numpy()
+    op, hi, lo, cl = window["open"].to_numpy(), window["high"].to_numpy(), window["low"].to_numpy(), window["close"].to_numpy()
+    expiry = _expiry(plan, idx[0], cfg) if _holds(plan) else as_of + pd.Timedelta(hours=cfg.expiry_hours)
+    if _holds(plan) and expiry <= idx[0]:
+        return {"outcome": "unfilled", "r": None, "closed_at": str(expiry), "note": "no bar before the plan had to be flat"}
     fill = op[0] + spread + slip if long else op[0] - slip
     n_live = int(idx.searchsorted(expiry, side="left"))            # bars strictly before expiry can hit a level
     stop_hit = (lo[:n_live] <= stop) if long else (hi[:n_live] + spread >= stop)
@@ -106,10 +141,11 @@ def score_plan(direction: str, plan: dict, as_of: pd.Timestamp, bars: pd.DataFra
         r = ((tp1 - fill) if long else (fill - tp1)) / planned_risk
         tp2_hit = bool((hi[i:] >= tp2).any() if long else (lo[i:] + spread <= tp2).any())
         return {"outcome": "win", "r": round(float(r), 3), "fill": round(float(fill), 2), "closed_at": str(idx[i]), "tp2_reached": tp2_hit}
-    if n_live < len(idx):                                          # reached expiry without either level
-        exit_px = op[n_live] if long else op[n_live] + spread
+    out = _expire(long, plan, idx, op, cl, n_live, expiry, now, spread)
+    if out:                                                        # reached expiry without either level
+        exit_px, closed_at = out
         r = ((exit_px - fill) if long else (fill - exit_px)) / planned_risk
-        return {"outcome": "expired", "r": round(float(r), 3), "fill": round(float(fill), 2), "closed_at": str(idx[n_live])}
+        return {"outcome": "expired", "r": round(float(r), 3), "fill": round(float(fill), 2), "closed_at": closed_at}
     return {"outcome": "open", "r": None, "fill": round(float(fill), 2)}
 
 
@@ -120,14 +156,18 @@ def _score_pending(long: bool, plan: dict, as_of: pd.Timestamp, window: pd.DataF
     - SELL stop fills when the bid low reaches entry; BUY stop when the ask high does. A gap through the level fills
       at the bar's open (worse), never at the level.
     - Every fill slips `slippage_assumed` against us. In the fill bar only the STOP is checked (a target in the same
-      bar is not counted), so an entry and a stop-out in one bar is a loss. Expiry runs `expiry_hours` from the fill."""
+      bar is not counted), so an entry and a stop-out in one bar is a loss. Expiry runs `expiry_hours` from the fill.
+    - v3.1 plans (`max_hold_hours`, `flat_by`): expiry runs the plan's hold from the fill, never past `flat_by`, and the order
+      is not valid past `flat_by` either."""
     spread, slip = cfg.spread_assumed, cfg.slippage_assumed
     entry, stop, tp1, tp2 = plan["entry"], plan["stop"], plan["tp1"], plan["tp2"]
     et = plan["entry_type"]
     planned_risk = abs(entry - stop)
     idx = window.index
-    op, hi, lo = window["open"].to_numpy(), window["high"].to_numpy(), window["low"].to_numpy()
+    op, hi, lo, cl = window["open"].to_numpy(), window["high"].to_numpy(), window["low"].to_numpy(), window["close"].to_numpy()
     valid_until = pd.Timestamp(plan["valid_until"]) if plan.get("valid_until") else as_of + pd.Timedelta(hours=24)
+    if plan.get("flat_by"):                            # v3.1: an order never fills after the time it must be flat by
+        valid_until = min(valid_until, pd.Timestamp(plan["flat_by"]))
     n_valid = int(idx.searchsorted(valid_until, side="left"))
     if et == "limit":
         touch = (lo[:n_valid] + spread <= entry) if long else (hi[:n_valid] >= entry)
@@ -145,7 +185,7 @@ def _score_pending(long: bool, plan: dict, as_of: pd.Timestamp, window: pd.DataF
         gap = (op[i0] + spread > entry) if long else (op[i0] < entry)
         base = (op[i0] + spread if long else op[i0]) if gap else entry
         fill = base + slip if long else base - slip
-    expiry = idx[i0] + pd.Timedelta(hours=cfg.expiry_hours)
+    expiry = _expiry(plan, idx[i0], cfg) if _holds(plan) else idx[i0] + pd.Timedelta(hours=cfg.expiry_hours)
     n_live = int(idx.searchsorted(expiry, side="left"))
     stop_hit = (lo[i0:n_live] <= stop) if long else (hi[i0:n_live] + spread >= stop)
     tp_hit = (hi[i0:n_live] >= tp1) if long else (lo[i0:n_live] + spread <= tp1)
@@ -163,10 +203,11 @@ def _score_pending(long: bool, plan: dict, as_of: pd.Timestamp, window: pd.DataF
         r = ((tp1 - fill) if long else (fill - tp1)) / planned_risk
         tp2_hit = bool((hi[i:] >= tp2).any() if long else (lo[i:] + spread <= tp2).any())
         return {"outcome": "win", "r": round(float(r), 3), **base_out, "closed_at": str(idx[i]), "tp2_reached": tp2_hit}
-    if n_live < len(idx):
-        exit_px = op[n_live] if long else op[n_live] + spread
+    out = _expire(long, plan, idx, op, cl, n_live, expiry, now, spread)
+    if out:
+        exit_px, closed_at = out
         r = ((exit_px - fill) if long else (fill - exit_px)) / planned_risk
-        return {"outcome": "expired", "r": round(float(r), 3), **base_out, "closed_at": str(idx[n_live])}
+        return {"outcome": "expired", "r": round(float(r), 3), **base_out, "closed_at": closed_at}
     return {"outcome": "open", "r": None, **base_out}
 
 
