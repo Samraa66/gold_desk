@@ -243,7 +243,7 @@ def inputs_record(ctx: Context, live: dict) -> dict:
 
 def default_events(as_of: pd.Timestamp) -> list[dict]:
     """FOMC and payrolls built in, plus events.csv (v1-v3's list) and events_v31.csv (the wider one), each event once. Only
-    `high` rows block (`calendar.blocking_event`); medium rows are shown to the agents."""
+    `high` rows block (`calendar.blocking_event`); `high_non_us` and medium rows are shown to the agents."""
     t = as_of.to_pydatetime()
     pool = cal.builtin_events(t - pd.Timedelta(days=2), t + pd.Timedelta(days=2)) + cal.file_events(cal.EVENTS_FILE) + cal.file_events(cal.EVENTS_V31_FILE)
     seen, out = set(), []
@@ -273,6 +273,13 @@ def news_run(ctx: Context, live: dict, llm=None, brief: dict | None = None) -> R
     return rep
 
 
+def events_just_out(ctx: Context, hours: float) -> list[dict]:
+    """Events released in the last `hours`: the agents' view of what has just hit, blocking or not."""
+    t = ctx.as_of.to_pydatetime()
+    return [{"hours_ago": round((t - e["time"]).total_seconds() / 3600, 1), "name": e["name"], "impact": e["impact"]}
+            for e in sorted(ctx.events or [], key=lambda e: e["time"]) if pd.Timedelta(0) <= t - e["time"] <= pd.Timedelta(hours=hours)]
+
+
 def macro_run(ctx: Context, live: dict, llm=None, brief: dict | None = None) -> Report:
     """v1's daily macro plus v3's intraday markets, and v3.1's real yield, COT, ETF flows and the wider calendar, each with
     its age or "unavailable"."""
@@ -283,7 +290,8 @@ def macro_run(ctx: Context, live: dict, llm=None, brief: dict | None = None) -> 
     rep.facts.update(intraday=live.get("cross") or {}, real_yield=live.get("real_yield", "unavailable"),
                      cot=live.get("cot", "unavailable"), etf_flows=live.get("etf_flows", "unavailable"),
                      calendar_48h=[{"in_hours": round((e["time"] - t).total_seconds() / 3600, 1), "name": e["name"], "impact": e["impact"]}
-                                   for e in cal.next_events(t, 48, ctx.events)])
+                                   for e in cal.next_events(t, 48, ctx.events)],
+                     events_last_3h=events_just_out(ctx, 3.0))
     if brief:
         rep.facts["daily_brief"] = brief_facts(brief)
     if llm is not None:
@@ -307,7 +315,7 @@ ROLE = ("Chart trader who trades the legs of an intraday move from price structu
         "(valid_hours, at most {max_valid:g}); the most hours the trade may stay open (max_hold_hours). TP2 is for "
         "information. Never chase: after a long leg with no pullback, wait for one. Never fade a momentum leg: no sell against "
         "rising M5 lows, no buy against falling M5 highs, and a squeeze waits for the break. Within {post_event}h after a "
-        "high-impact release propose nothing. The setup must agree with your day read, or say why not. Say entry_type \"none\" "
+        "high-impact US release propose nothing. The setup must agree with your day read, or say why not. Say entry_type \"none\" "
         "when the chart gives nothing clean; that is a normal answer.")
 SCHEMA = ('{"day_type": "trending"|"ranging"|"unclear", "day_direction": "up"|"down"|"none", "bias": -1..1 (negative = '
           'bearish), "confidence": 0..1, "read": "<=4 sentences: day type, the move so far, key levels, what would change your '
@@ -373,7 +381,8 @@ def master_decide(ctx: Context, reports: dict, plan: dict | None, why_not: str |
              "news": {"score": news.score, "confidence": news.confidence, "summary": news.summary, "driver": news.facts.get("driver"),
                       "risk_flag": news.facts.get("risk_flag")},
              "liquidity": {"summary": liq.summary, "next_events_48h": liq.facts.get("next_events_48h"),
-                           "volume_vs_normal": live.get("volume_ratio")}}
+                           "volume_vs_normal": live.get("volume_ratio")},
+             "events_last_3h": mac.facts.get("events_last_3h", [])}
     if brief:
         facts["daily_brief"] = brief_facts(brief)
     reply = ask(llm, cfg.deep_model, MASTER_ROLE, V.MASTER_SCHEMA, facts, cfg.max_tokens, cfg, agent="master")
@@ -388,7 +397,7 @@ def master_decide(ctx: Context, reports: dict, plan: dict | None, why_not: str |
 MASTER_ROLE = ("Master trader. The chart trader read the chart and proposed a trade with its own stop, target and holding time; the "
                "risk manager checked and sized it; the news, cross-asset and liquidity reports are attached. Decide PLACE (exactly "
                "as sized) or PASS. You cannot change the prices. Pass for a stated reason: news or other markets hard against the "
-               "trade, fresh headline risk, a release due inside the trade's life, or a read that does not support it. Do not pass "
+               "trade, fresh headline risk, a release due inside the trade's life, or a read that does not support it. A non-US central bank event (impact high_non_us, in events_last_3h or next_events_48h) does not stop the desk: weigh it and pass only if it is hard against this trade. Do not pass "
                "merely because nothing is certain: a clean setup at fair risk is the job. Vetoes are final.")
 
 

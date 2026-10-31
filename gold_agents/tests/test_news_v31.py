@@ -135,7 +135,7 @@ FF = [{"title": "CPI m/m", "country": "USD", "date": "2026-11-12T08:30:00-05:00"
 def test_calendar_keeps_boj_and_medium_marked():
     rows = {r["name"]: r for r in N.calendar_rows(FF)}
     assert rows["CPI m/m"]["impact"] == "high" and rows["Retail Sales m/m"]["impact"] == "medium"
-    assert rows["JPY BOJ Policy Rate"] == {"time_utc": "2026-11-12T03:00:00Z", "name": "JPY BOJ Policy Rate", "impact": "high"}
+    assert rows["JPY BOJ Policy Rate"] == {"time_utc": "2026-11-12T03:00:00Z", "name": "JPY BOJ Policy Rate", "impact": "high_non_us"}
     assert rows["JPY BOJ Gov Ueda Speaks"]["impact"] == "medium"
     assert "Crude Oil Inventories" not in rows and not any("ZEW" in n for n in rows)      # low impact, and not a central bank
     from gold_agents import news
@@ -153,7 +153,7 @@ def test_refresh_writes_both_lists_from_one_read(tmp_path):
     v3, v31 = tmp_path / "events.csv", tmp_path / "events_v31.csv"
     assert N.refresh_calendars(Session(), v3, v31) == (1, 4) and len(calls) == 1
     assert [e["name"] for e in cal2.file_events(v3)] == ["CPI m/m"]
-    assert {e["impact"] for e in cal2.file_events(v31)} == {"high", "medium"}
+    assert {e["impact"] for e in cal2.file_events(v31)} == {"high", "high_non_us", "medium"}
 
 
 def test_only_high_impact_blocks(tmp_path):
@@ -163,7 +163,8 @@ def test_only_high_impact_blocks(tmp_path):
     ev = cal2.file_events(v31)
     at = lambda s: pd.Timestamp(s).to_pydatetime()
     assert cal2.blocking_event(at("2026-11-13T13:40:00Z"), 30, 30, ev) is None                 # medium retail sales: shown, not blocked
-    assert cal2.blocking_event(at("2026-11-12T03:10:00Z"), 30, 30, ev)["name"] == "JPY BOJ Policy Rate"
+    assert cal2.blocking_event(at("2026-11-12T03:10:00Z"), 30, 30, ev) is None                 # a non-US central bank: shown, not blocked
+    assert cal2.blocking_event(at("2026-11-12T13:40:00Z"), 30, 30, ev)["name"] == "CPI m/m"    # a US high-impact release blocks
 
 
 def test_sources_add_primary_feeds_and_keep_one_per_story():

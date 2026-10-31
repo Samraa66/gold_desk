@@ -137,3 +137,9 @@ def test_only_a_recent_brief_reaches_the_desk(tmp_path):
     assert D31.current_brief(pd.Timestamp("2026-10-14T15:00:00Z"), path)["at"] == BRIEF["at"]
     assert D31.current_brief(pd.Timestamp("2026-10-15T07:00:00Z"), path) is None
     assert D31.current_brief(pd.Timestamp("2026-10-14T05:00:00Z"), path) is None     # never one from after the decision time
+
+
+def test_a_non_us_central_bank_decision_brings_a_brief():
+    t = pd.Timestamp("2026-10-29T13:30:00Z")
+    e = {"time": t - pd.Timedelta(minutes=15), "name": "EUR Main Refinancing Rate", "impact": "high_non_us"}
+    assert "EUR Main Refinancing Rate" in (B.reason(t, None, [e]) or "")

@@ -228,6 +228,8 @@ later version has judged it, because an unjudged input is how the 70.9% got in.
 **Before go-live (plan Task 11, not done on the branch).**
 - A deploy copies `scripts/systemd/` and the new `watch_cycle.sh`, so the watcher moves to v3.1 on the first deploy, and it enables
   `golddesk-news.timer`. `deploy_vps.sh`, `pull_dashboard.sh` and the watch service were updated for this on 2026-10-31.
+- Owner's decision, 2026-10-31: only US high-impact events block. Non-US central banks are stored as `high_non_us`: the desk still
+  proposes, and the macro and master agents see them, just out (`events_last_3h`) or due, and weigh them. They also bring a brief.
 - Done from the Mac on 2026-10-31: positions cause, live source checks, re-entry check, dry run and a read of all four agents' prompts.
 - The Telelytics page (`gold_desk_routes.py`) serves only `dashboard_v3.html`, so after the move it shows v3's frozen page until that
   repo adds `dashboard_v31.html`. That repo is not changed from here.

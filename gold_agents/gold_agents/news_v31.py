@@ -131,7 +131,8 @@ CENTRAL_BANK = re.compile(r"(policy rate|cash rate|overnight rate|refinancing ra
 
 def calendar_rows(rows: list[dict]) -> list[dict]:
     """From the weekly calendar feed: US releases of high or medium impact, and other central banks' decisions, statements and
-    speeches of high or medium impact, each marked with its impact. Only `high` blocks the desk (`calendar.blocking_event`)."""
+    speeches of high or medium impact, each marked with its impact. Only `high` blocks the desk (`calendar.blocking_event`), so a non-US `high` is written as
+    `high_non_us`: the agents see and weigh it, and the desk still proposes (the owner's decision, 2026-10-31)."""
     out = []
     for e in rows:
         impact, country, title = str(e.get("impact", "")).lower(), str(e.get("country", "")), str(e.get("title", ""))
@@ -144,7 +145,7 @@ def calendar_rows(rows: list[dict]) -> list[dict]:
         except (KeyError, TypeError, ValueError):
             continue
         out.append({"time_utc": t.strftime("%Y-%m-%dT%H:%M:%SZ"), "name": title if country == "USD" else f"{country} {title}",
-                    "impact": impact})
+                    "impact": "high_non_us" if impact == "high" and country != "USD" else impact})
     return out
 
 

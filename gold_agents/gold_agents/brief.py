@@ -44,7 +44,7 @@ def reason(now: pd.Timestamp, last: dict | None, events: list[dict]) -> str | No
             return "london"
     for e in sorted(events or [], key=lambda e: e["time"]):
         et = pd.Timestamp(e["time"])
-        if e.get("impact") in ("high", "medium") and et <= t and t - et <= RELEASE_WINDOW and (last_at is None or last_at < et):
+        if e.get("impact") in ("high", "high_non_us", "medium") and et <= t and t - et <= RELEASE_WINDOW and (last_at is None or last_at < et):
             return f"release: {e['name']}"
     return None
 

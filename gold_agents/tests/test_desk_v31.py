@@ -327,7 +327,7 @@ def test_chart_prompt_has_move_and_no_news(history):
     assert "Gold slides" not in c["user"]                                  # the chart agent never sees a headline
     text = c["system"] + c["user"]
     assert "$5" not in text and "$" not in c["system"] and "quick trades" not in text
-    assert "rising M5 lows" in c["system"] and "high-impact release" in c["system"] and "squeeze" in c["system"]
+    assert "rising M5 lows" in c["system"] and "high-impact US release" in c["system"] and "squeeze" in c["system"]
     assert "max_hold_hours" in c["system"] and "day_type" in c["system"]
 
 
@@ -540,8 +540,24 @@ def test_only_high_impact_blocks_the_desk(history):
     medium = decide31(history, t, fake31(history, t), events=events)
     assert medium["decision"] == "SELL"
     assert medium["reports"]["macro"]["facts"]["calendar_48h"] == [{"in_hours": 5.0, "name": "JPY BOJ Gov Ueda Speaks", "impact": "medium"}]
-    high = decide31(history, t, fake31(history, t), events=[{"time": before, "name": "JPY BOJ Policy Rate", "impact": "high"}])
-    assert high["decision"] == "PASS" and "BOJ" in high["reason"]
+    high = decide31(history, t, fake31(history, t), events=[{"time": before, "name": "US CPI", "impact": "high"}])
+    assert high["decision"] == "PASS" and "CPI" in high["reason"]
+
+
+def test_non_us_central_banks_inform_and_never_block(history):
+    """The owner's decision, 2026-10-31: the desk still proposes; the agents see the event and weigh it."""
+    t = asof(history)
+    just_out = {"time": (t - pd.Timedelta(hours=1)).to_pydatetime(), "name": "JPY BOJ Policy Rate", "impact": "high_non_us"}
+    due = {"time": (t + pd.Timedelta(hours=2)).to_pydatetime(), "name": "EUR ECB Press Conference", "impact": "high_non_us"}
+    llm = fake31(history, t)
+    call = decide31(history, t, llm, events=[just_out, due])
+    assert call["decision"] == "SELL"
+    seen = {"in_hours": 2.0, "name": "EUR ECB Press Conference", "impact": "high_non_us"}
+    assert call["reports"]["macro"]["facts"]["calendar_48h"] == [seen]
+    assert call["reports"]["macro"]["facts"]["events_last_3h"] == [{"hours_ago": 1.0, "name": "JPY BOJ Policy Rate", "impact": "high_non_us"}]
+    master = next(c for c in llm.calls if "Master trader" in c["system"])
+    assert "JPY BOJ Policy Rate" in master["user"] and "EUR ECB Press Conference" in master["user"]
+    assert "high_non_us" in master["system"]
 
 
 def test_default_events_add_the_wider_list(tmp_path, monkeypatch):
