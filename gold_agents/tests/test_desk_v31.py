@@ -348,3 +348,130 @@ def test_chart_sees_its_own_calls_on_the_move_and_never_the_rules_ones(history):
     import json as _json
     move = _json.loads(chart_call(llm)["user"].split("MOVE:\n", 1)[1].split("\n\nSTRUCTURE:", 1)[0])
     assert [o["direction"] for o in move["open"]] == ["BUY"]
+
+
+# ---------------- Task 6: watcher hours, other markets, gaps ----------------
+from dataclasses import asdict  # noqa: E402
+
+from gold_agents import structure as S  # noqa: E402
+from gold_agents import watcher as W  # noqa: E402
+
+
+def m5(rows, end="2026-10-14T15:00:00Z"):
+    idx = pd.date_range(end=end, periods=len(rows), freq="5min", tz="UTC")
+    return pd.DataFrame(rows, columns=["open", "high", "low", "close"], index=idx).assign(volume=1000)
+
+
+def flat(n=60, px=4000.0, w=2.0):
+    return [(px, px + w, px - w, px)] * n
+
+
+def test_watch_params_unchanged():
+    assert W.params() == {"range_bars": 36, "atr_bars": 14, "spike_mult": 2.5, "min_poke": 0.25, "cooldown_min": 30,
+                          "max_wakes_day": 30, "stale_min": 15, "slots": (6, 10, 14, 18)}
+    assert V3.v3_hash(V3.config()) == KNOWN_HASHES["v3"]
+    v31 = W.params(W.WATCH_V31)
+    assert {k: v31[k] for k in W.params()} == W.params()                      # a copy of v3's numbers, plus the new ones
+    assert (v31["cross_mult"], v31["gap_min"], v31["news_cooldown_min"], v31["max_wakes_day"]) == (3.0, 30, 15, 30)
+    assert D31.v31_hash(D31.config()) != D31.v31_hash(D31.config(), watch=W.WatchV31(cross_mult=2.0))
+
+
+def cross_bars(last_mult, end="2026-10-14T15:00:00Z"):
+    rows = [(150.0, 150.05, 149.95, 150.0)] * 30                             # a normal bar is 0.10 wide
+    return m5(rows + [(150.0, 150.0 + 0.1 * last_mult, 150.0, 150.0 + 0.1 * last_mult)], end=end)
+
+
+def test_cross_move_fires_on_large_bar_only():
+    t = W.cross_triggers({"USD_JPY": cross_bars(3.1)})
+    assert len(t) == 1 and t[0]["kind"] == "cross_move" and t[0]["direction"] is None and t[0]["name"].startswith("USD_JPY ")
+    assert W.cross_triggers({"USD_JPY": cross_bars(2.9)}) == []
+
+
+def test_cross_market_dead_is_skipped():
+    empty = m5([]).iloc[:0]
+    stale = cross_bars(5.0, end="2026-10-14T12:00:00Z")
+    t = W.cross_triggers({"USD_JPY": None, "EUR_USD": empty, "BCO_USD": stale, "XAG_USD": cross_bars(4.0)},
+                         now=pd.Timestamp("2026-10-14T15:06:00Z"))
+    assert [x["name"].split()[0] for x in t] == ["XAG_USD"]
+
+
+def weekend_bars(first_close):
+    """Friday 2026-10-30 to the 20:55 UTC bar (16:55 New York), then Sunday's first bar 23:05 UTC (18:05 New York)."""
+    fri = m5(flat(60), end="2026-10-30T20:55:00Z")
+    sun = pd.DataFrame([(first_close - 1, first_close + 1, first_close - 2, first_close)], columns=["open", "high", "low", "close"],
+                       index=pd.DatetimeIndex([pd.Timestamp("2026-11-01T23:05:00Z")])).assign(volume=1000)
+    return pd.concat([fri, sun])
+
+
+def test_gap_reads_as_gap():
+    bars = weekend_bars(4030.0)                                               # far beyond Friday's 3 h range (3998-4002)
+    t = W.triggers(bars, S.key_levels(bars), W.WATCH_V31, gap_min=W.WATCH_V31.gap_min)
+    assert [x["kind"] for x in t] == ["gap"] and t[0]["direction"] is None and "50h gap" in t[0]["name"]
+    old = W.triggers(bars, S.key_levels(bars))                                # v3 read the same bar as a break
+    assert any(x["kind"] in ("range_break", "level_break") for x in old)
+
+
+def test_after_a_gap_the_range_starts_again():
+    bars = weekend_bars(4030.0)
+    nxt = pd.DataFrame([(4030, 4031, 4029, 4030.5)], columns=["open", "high", "low", "close"],
+                       index=pd.DatetimeIndex([pd.Timestamp("2026-11-01T23:10:00Z")])).assign(volume=1000)
+    t = W.triggers(pd.concat([bars, nxt]), None, W.WATCH_V31, gap_min=W.WATCH_V31.gap_min)
+    assert not [x for x in t if x["kind"] == "range_break"]                   # Friday's range is not this morning's
+
+
+def test_a_quiet_reopen_is_no_trigger():
+    bars = weekend_bars(4000.5)
+    assert W.triggers(bars, None, W.WATCH_V31, gap_min=W.WATCH_V31.gap_min) == []
+
+
+class Book:
+    def __init__(self, bars):
+        self.bars, self.woke = bars, []
+
+    def fetch(self):
+        return self.bars
+
+    def wake(self, trigger, now):
+        self.woke.append(trigger)
+
+
+BREAK_BAR = [(4000, 4000.5, 3985, 3987)]
+
+
+def test_ticks_in_thin_hours_when_told(tmp_path):
+    b = Book(m5(flat() + BREAK_BAR, end="2026-11-03T03:00:00Z"))            # 22:00 Monday New York: Asia hours
+    now = pd.Timestamp("2026-11-03T03:01:00Z")
+    assert cal.desk_window(now.to_pydatetime())[0] == "thin"
+    assert W.tick(now, b.fetch, b.wake, tmp_path / "s.json", tmp_path / "w.jsonl") == "thin hours"      # v3's defaults
+    out = W.tick(now, b.fetch, b.wake, tmp_path / "s.json", tmp_path / "w.jsonl", W.WATCH_V31, window=cal.desk_window, thin_sleeps=False)
+    assert out == "woke" and b.woke[0]["direction"] == "SELL"
+
+
+def test_sunday_reopen_is_watched(tmp_path):
+    b = Book(weekend_bars(4030.0))
+    out = W.tick(pd.Timestamp("2026-11-01T23:11:00Z"), b.fetch, b.wake, tmp_path / "s.json", tmp_path / "w.jsonl", W.WATCH_V31,
+                 window=cal.desk_window, thin_sleeps=False)
+    assert out == "woke" and b.woke == [{"kind": "gap", "direction": None, "level": 4000.0, "name": b.woke[0]["name"]}]
+
+
+def test_break_is_shut(tmp_path):
+    b = Book(m5(flat() + BREAK_BAR, end="2026-11-02T22:25:00Z"))
+    now = pd.Timestamp("2026-11-02T22:31:00Z")                                # Mon 17:31 New York
+    out = W.tick(now, b.fetch, b.wake, tmp_path / "s.json", tmp_path / "w.jsonl", W.WATCH_V31, window=cal.desk_window, thin_sleeps=False)
+    assert out == "market shut" and not b.woke
+
+
+def test_tick_adds_cross_triggers_behind_gold_ones(tmp_path):
+    b = Book(m5(flat() + BREAK_BAR))
+    cross = [{"kind": "cross_move", "direction": None, "level": None, "name": "USD_JPY 3.4x its normal 5-min bar"}]
+    log = tmp_path / "w.jsonl"
+    W.tick(T31 := pd.Timestamp("2026-10-14T15:01:00Z"), b.fetch, b.wake, tmp_path / "s.json", log, W.WATCH_V31,
+           window=cal.desk_window, thin_sleeps=False, extra=lambda: cross)
+    assert b.woke[0]["kind"] in ("level_break", "range_break")              # gold's own trigger leads
+    import json as _json
+    kinds = [x["kind"] for x in _json.loads(log.read_text())["triggers"]]
+    assert kinds[-1] == "cross_move" and "range_break" in kinds
+    b2 = Book(m5(flat()))
+    W.tick(T31, b2.fetch, b2.wake, tmp_path / "s2.json", tmp_path / "w2.jsonl", W.WATCH_V31, window=cal.desk_window,
+           thin_sleeps=False, extra=lambda: cross)
+    assert b2.woke == cross

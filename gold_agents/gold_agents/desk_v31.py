@@ -29,6 +29,7 @@ from . import features as F
 from . import instruments as I
 from . import journal as J
 from . import moves
+from . import watcher as W
 from .agents import liquidity
 from .agents.base import DESK, ask, clamp, localise
 from .config import Config, rules_hash as v1_hash
@@ -73,8 +74,8 @@ def config() -> Config:
                    expiry_hours=24.0)
 
 
-def v31_hash(cfg: Config, v31: V31 = V31_DEFAULT) -> str:
-    payload = {"v1": v1_hash(cfg), "v31": asdict(v31), "version": VERSION}
+def v31_hash(cfg: Config, v31: V31 = V31_DEFAULT, watch: W.WatchV31 = W.WATCH_V31) -> str:
+    payload = {"v1": v1_hash(cfg), "v31": asdict(v31), "watch": W.params(watch), "version": VERSION}
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=list).encode()).hexdigest()[:8]
 
 
