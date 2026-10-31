@@ -25,12 +25,15 @@ import pandas as pd
 from . import calendar as cal
 from . import desk_v2 as V
 from . import desk_v3 as V3
+from . import features as F
 from . import instruments as I
 from . import journal as J
+from . import moves
 from .agents import liquidity
-from .agents.base import ask, clamp
+from .agents.base import DESK, ask, clamp, localise
 from .config import Config, rules_hash as v1_hash
 from .context import Context, build_context
+from .types import Report
 
 VERSION = "3.1-legs"
 JOURNAL = I.get("XAU_USD").journal_path.with_name("calls_v31.jsonl")
@@ -160,6 +163,61 @@ def loose_check(ctx: Context, setup: dict, v31: V31, st: dict | None) -> dict | 
     return raw
 
 
+# ---------------------------------------------------------------- chart agent
+# Replaces v3's "quick trades" and "$5-15" text: the model reads the day and the move, and sets stop, target, validity and
+# holding time from the market, justifying each. The no-fade, squeeze and post-event sentences are v3's.
+ROLE = ("Chart trader who trades the legs of an intraday move from price structure. You were woken because of TRIGGER (null = a "
+        "routine check; a gap, cross_move or news trigger carries no direction and is only a reason to look). State the day type "
+        "first, from H4, H1 and MOVE: trending (one way, legs with shallow pullbacks), ranging, or unclear, and its direction. "
+        "On a trending day the main setups are a re-entry with the move after a pullback fails (it stalls and turns back the "
+        "move's way) and a fresh break of the last leg's extreme; one trade per leg, closed at its target, the next only after "
+        "confirmation. MOVE lists the desk's own calls on this move and what is open now. On a ranging day trade only from a "
+        "range edge, or nothing. Judge every number from current structure and volatility and justify each in why: the stop "
+        "beyond the M5 or M15 structure that proves the trade wrong, at least {m5:g}x the M5 ATR away; TP1 at least {min_rr}R "
+        "away, at the next level or where the move's legs suggest, and a full exit; how long the order stays valid "
+        "(valid_hours, at most {max_valid:g}); the most hours the trade may stay open (max_hold_hours). TP2 is for "
+        "information. Never chase: after a long leg with no pullback, wait for one. Never fade a momentum leg: no sell against "
+        "rising M5 lows, no buy against falling M5 highs, and a squeeze waits for the break. Within {post_event}h after a "
+        "high-impact release propose nothing. The setup must agree with your day read, or say why not. Say entry_type \"none\" "
+        "when the chart gives nothing clean; that is a normal answer.")
+SCHEMA = ('{"day_type": "trending"|"ranging"|"unclear", "day_direction": "up"|"down"|"none", "bias": -1..1 (negative = '
+          'bearish), "confidence": 0..1, "read": "<=4 sentences: day type, the move so far, key levels, what would change your '
+          'mind", "setup": {"direction": "BUY"|"SELL"|null, "entry_type": "market"|"limit"|"stop"|"none", "entry": <price or '
+          'null>, "stop": <price or null>, "tp1": <price or null>, "tp2": <price or null>, "valid_hours": <hours>, '
+          '"max_hold_hours": <hours>, "why": "<=3 sentences: the setup, and why this stop, target, validity and holding time"}}')
+DAY_TYPES, DAY_DIRECTIONS = ("trending", "ranging", "unclear"), ("up", "down", "none")
+
+
+def _pick(value, allowed: tuple) -> str:
+    v = str(value or "").strip().lower()
+    return v if v in allowed else "unclear"
+
+
+def chart_run(ctx: Context, v31: V31, m5: pd.DataFrame, trigger: dict | None, live: dict, move: dict, llm=None) -> Report:
+    st, candles = V3.chart_facts(ctx, _v3(v31), m5, live)
+    setup = V3.rules_setup(ctx, st, trigger, _v3(v31), st["atr"]["m5"])
+    live_setup = setup["entry_type"] != "none"
+    rep = Report("chart", score=float(st["h1_pattern"]["bias"]) if live_setup else 0.0, confidence=0.5 if live_setup else 0.0,
+                 summary=f"rules v3.1: {setup['why']}", facts={"structure": st, "move": move, "setup": setup, "rules_setup": setup})
+    if llm is None:
+        return rep
+    role = ROLE.format(m5=v31.min_stop_atr_m5, min_rr=v31.min_rr, max_valid=v31.max_valid_hours, post_event=v31.post_event_hours)
+    system = localise(f"{DESK}\nYour role: {role}\nJSON schema: {SCHEMA}", ctx.cfg)
+    user = (f"AS OF {ctx.as_of:%Y-%m-%d %H:%M} UTC ({ctx.as_of:%A})\nTRIGGER:\n{json.dumps(trigger, default=str)}\n\n"
+            f"MOVE:\n{json.dumps(move, indent=1, default=str)}\n\n"
+            f"STRUCTURE:\n{json.dumps(st, indent=1, default=str)}\n\nCANDLES (closed bars only):\n{candles}")
+    reply = llm.complete_json(model=ctx.cfg.deep_model, agent="chart", system=system, user=user, max_tokens=v31.chart_max_tokens)
+    s = reply.get("setup") or {}
+    rep.facts["setup"] = {"direction": s.get("direction"), "entry_type": str(s.get("entry_type") or "none").lower(), "entry": s.get("entry"),
+                          "stop": s.get("stop"), "tp1": s.get("tp1"), "tp2": s.get("tp2"),
+                          "valid_hours": s.get("valid_hours") or v31.default_valid_hours,
+                          "max_hold_hours": normal_hold(s.get("max_hold_hours"), v31), "why": str(s.get("why", ""))[:600]}
+    rep.facts["day_type"], rep.facts["day_direction"] = _pick(reply.get("day_type"), DAY_TYPES), _pick(reply.get("day_direction"), DAY_DIRECTIONS)
+    rep.score, rep.confidence = clamp(reply.get("bias", 0.0)), clamp(reply.get("confidence", 0.0), 0.0, 1.0)
+    rep.summary, rep.source = str(reply.get("read", ""))[:800], ctx.cfg.deep_model
+    return rep
+
+
 # ---------------------------------------------------------------- master
 def master_decide(ctx: Context, reports: dict, plan: dict | None, why_not: str | None, live: dict, llm=None,
                   brief: dict | None = None) -> tuple[str, str, dict | None, str]:
@@ -217,10 +275,11 @@ def decide_at(m1_all: pd.DataFrame, as_of, cfg: Config, *, llm=None, macro_df=No
         as_of = as_of.tz_localize("UTC")
     live = live or {}
     mode = "llm" if llm is not None else "rules"
-    state, _ = state_for(prior_entries or [], mode, m1_all, as_of, cfg)
+    state, scored = state_for(prior_entries or [], mode, m1_all, as_of, cfg)
     ctx = build_context(m1_all, as_of, cfg, macro_df, events, state)
     m5 = V3.m5_bars(ctx)
-    reports = {"chart": V3.chart_run(ctx, _v3(v31), m5, trigger, live, llm), "macro": V3.macro_run(ctx, live, llm),
+    move = moves.current(ctx.tf, as_of, F.atr(ctx.tf["D1"]), scored)
+    reports = {"chart": chart_run(ctx, v31, m5, trigger, live, move, llm), "macro": V3.macro_run(ctx, live, llm),
                "news": V3.news_run(ctx, live, llm), "liquidity": liquidity.run(ctx, window=cal.desk_window)}
     chart = reports["chart"]
     st, atr_m5 = chart.facts["structure"], chart.facts["structure"]["atr"]["m5"]

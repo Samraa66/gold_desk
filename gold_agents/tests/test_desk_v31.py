@@ -308,3 +308,43 @@ def test_liquidity_reads_new_york_hours(history):
     t = pd.Timestamp("2026-10-16T20:30:00Z")                         # Fri 16:30 New York: v3's window was already shut
     call = decide31(history, t)
     assert call["reports"]["liquidity"]["facts"]["market"] == "open"
+
+
+# ---------------- Task 5: move memory and trend read in the chart agent ----------------
+def chart_call(llm):
+    return next(c for c in llm.calls if c["agent"] == "chart")
+
+
+def test_chart_prompt_has_move_and_no_news(history):
+    t = asof(history)
+    llm = fake31(history, t)
+    call = decide31(history, t, llm)
+    c = chart_call(llm)
+    assert "MOVE:" in c["user"] and '"legs"' in c["user"] and '"started_at"' in c["user"]
+    assert call["reports"]["chart"]["facts"]["move"]["direction"] in ("up", "down", "none")
+    assert "Gold slides" not in c["user"]                                  # the chart agent never sees a headline
+    text = c["system"] + c["user"]
+    assert "$5" not in text and "$" not in c["system"] and "quick trades" not in text
+    assert "rising M5 lows" in c["system"] and "high-impact release" in c["system"] and "squeeze" in c["system"]
+    assert "max_hold_hours" in c["system"] and "day_type" in c["system"]
+
+
+def test_chart_reply_keeps_day_type(history):
+    t = asof(history)
+    call = decide31(history, t, fake31(history, t, day_type="Trending", day_direction="down", hold="soon"))
+    f = call["reports"]["chart"]["facts"]
+    assert (f["day_type"], f["day_direction"]) == ("trending", "down")
+    assert call["plan"]["max_hold_hours"] == D31.V31().default_hold_hours     # "soon" went through normal_hold
+    f = decide31(history, t, fake31(history, t, hold=2.0))["reports"]["chart"]["facts"]
+    assert (f["day_type"], f["day_direction"]) == ("unclear", "unclear")
+    assert decide31(history, t, fake31(history, t, hold=2.0))["plan"]["max_hold_hours"] == 2.0
+
+
+def test_chart_sees_its_own_calls_on_the_move_and_never_the_rules_ones(history):
+    t = asof(history)
+    px = price_at(history, t)
+    llm = fake31(history, t)
+    decide31(history, t, llm, prior_entries=[open_entry(t, "llm", "BUY", px, 40), open_entry(t, "rules", "SELL", px, 20)])
+    import json as _json
+    move = _json.loads(chart_call(llm)["user"].split("MOVE:\n", 1)[1].split("\n\nSTRUCTURE:", 1)[0])
+    assert [o["direction"] for o in move["open"]] == ["BUY"]
